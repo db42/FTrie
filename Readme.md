@@ -79,7 +79,7 @@ docker run -it --rm helloworld-server-image-amd64 /bin/bash
 
 **Memory**
 calculation
-10 bytes * 370K = 3.7MB
+10 bytes per words * 370K words = 3.7MB
 
 26 items in array for each character
 

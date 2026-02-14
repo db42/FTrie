@@ -4,8 +4,10 @@ use hello_world::greeter_server::{Greeter, GreeterServer};
 use hello_world::{HelloReply, HelloRequest};
 
 mod indexer;
+mod partition;
 
 use indexer::Indexer;
+use partition::{env_or_default, PrefixRange};
 // GRPC server implementation for prefix search service.
 // 
 // This module implements a GRPC server that provides prefix-based word search functionality
@@ -51,19 +53,28 @@ pub struct MyGreeter {
 
 impl MyGreeter {
     fn new() -> Self {
+        let bind_addr = env_or_default("BIND_ADDR", "[::]:50051");
+        let prefix_range = env_or_default("PREFIX_RANGE", "a-z");
+        let prefix_range = PrefixRange::parse(&prefix_range)
+            .unwrap_or_else(|e| panic!("invalid PREFIX_RANGE: {}", e));
+
         let mut indexer = Indexer::new();
         let tenant1 = "thoughtspot";
         let path1 = "./words.txt";
-        indexer.indexFile(&tenant1, &path1);
+        indexer.indexFileForPrefixRange(&tenant1, &path1, prefix_range.start, prefix_range.end);
 
         let tenant2 = "power";
         let path2 = "./words_alpha.txt";
-        indexer.indexFile(&tenant2, &path2);
-
+        indexer.indexFileForPrefixRange(&tenant2, &path2, prefix_range.start, prefix_range.end);
 
         let greeter = MyGreeter {
             indexer: indexer
         };
+
+        println!(
+            "Server configured: BIND_ADDR={} PREFIX_RANGE={}-{}",
+            bind_addr, prefix_range.start, prefix_range.end
+        );
 
         greeter
     }
@@ -93,7 +104,8 @@ impl Greeter for MyGreeter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::]:50051".parse()?;
+    let bind_addr = env_or_default("BIND_ADDR", "[::]:50051");
+    let addr = bind_addr.parse()?;
     // let greeter = MyGreeter::default();
     let greeter = MyGreeter::new();
 

@@ -1,39 +1,29 @@
 
-// create a new load balancer.
-// keep a list of all the nodes along with the range of prefix character starting for the trie residing in that node.
-// Start: if there is just one node, then the range is from 'a' to 'z'
-
-
-// this LB will serve the say_hello requests by figuring out which node should serve the request.
-// it will then forward the request to the node and return the response.
-// the node will then search the trie for the prefix and return the result.
-
-// extension in future: add the logic of adding/removing nodes from the LB.
-// there'll be an partitioning algorithm to figure out which node should serve which range of prefixes.
-// for now, let's start with a single node serving all the prefixes.
-
-use std::collections::HashMap;
-
-
 use tonic::{transport::Server, Request, Response, Status};
 use hello_world::greeter_server::{Greeter, GreeterServer};
 use hello_world::{HelloReply, HelloRequest};
 use hello_world::greeter_client::GreeterClient;
+
+mod partition;
+use partition::{env_or_default, PartitionMap};
 
 pub mod hello_world {
     tonic::include_proto!("helloworld"); 
 }
 
 pub struct LoadBalancer {
-    // For now just store single backend node address
-    node_addr: String
+    partition_map: PartitionMap,
 }
 
 impl LoadBalancer {
     pub fn new() -> Self {
-        LoadBalancer {
-            node_addr: "http://[::1]:50051".to_string()
-        }
+        let pm_str = env_or_default("PARTITION_MAP", "a-z=http://[::1]:50051");
+        let partition_map =
+            PartitionMap::parse(&pm_str).unwrap_or_else(|e| panic!("invalid PARTITION_MAP: {}", e));
+
+        println!("LB configured: PARTITION_MAP={}", pm_str);
+
+        LoadBalancer { partition_map }
     }
 }
 
@@ -45,16 +35,23 @@ impl Greeter for LoadBalancer {
     ) -> Result<Response<HelloReply>, Status> {
         println!("Load balancer received request: {:?}", request);
 
-        // Create client to backend node
-        let mut client = GreeterClient::connect(self.node_addr.clone())
+        let prefix = request.get_ref().name.as_str();
+        let partition = self
+            .partition_map
+            .route(prefix)
+            .ok_or_else(|| Status::invalid_argument("prefix must start with a-z"))?;
+        let backend = partition.backends[0].clone();
+
+        // Create client to backend node (Phase 1: single backend per partition)
+        let mut client = GreeterClient::connect(backend.clone())
             .await
-            .map_err(|e| Status::internal(format!("Failed to connect to backend: {}", e)))?;
+            .map_err(|e| Status::unavailable(format!("Failed to connect to backend: {}", e)))?;
 
         // Forward the request
         let response = client
             .say_hello(request)
             .await
-            .map_err(|e| Status::internal(format!("Backend request failed: {}", e)))?;
+            .map_err(|e| Status::unavailable(format!("Backend request failed: {}", e)))?;
 
         Ok(response)
     }
@@ -62,7 +59,8 @@ impl Greeter for LoadBalancer {
 
 #[tokio::main] 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::]:50052".parse()?;
+    let bind_addr = env_or_default("BIND_ADDR", "[::]:50052");
+    let addr = bind_addr.parse()?;
     let lb = LoadBalancer::new();
 
     println!("Load balancer listening on {}", addr);
@@ -74,5 +72,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-

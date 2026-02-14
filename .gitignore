@@ -1,0 +1,10 @@
+*.pem
+
+# Rust build artifacts
+helloworld-tonic/target/
+
+# Large images / exports (keep out of git)
+helloworld-tonic/*.tar
+
+# Placeholder manifests
+helloworld-tonic/helloworld-tonic.yaml

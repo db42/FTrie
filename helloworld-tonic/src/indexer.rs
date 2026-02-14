@@ -52,6 +52,31 @@ impl Indexer {
     }
 
     pub fn indexFile(&mut self, tenantID: &str, filePath: &str) {
+        self.indexFileFiltered(tenantID, filePath, |_| true);
+    }
+
+    pub fn indexFileForPrefixRange(
+        &mut self,
+        tenantID: &str,
+        filePath: &str,
+        start: char,
+        end: char,
+    ) {
+        let start = start.to_ascii_lowercase();
+        let end = end.to_ascii_lowercase();
+        self.indexFileFiltered(tenantID, filePath, move |word: &str| {
+            let c = match word.chars().next() {
+                Some(c) => c.to_ascii_lowercase(),
+                None => return false,
+            };
+            ('a'..='z').contains(&c) && c >= start && c <= end
+        });
+    }
+
+    fn indexFileFiltered<F>(&mut self, tenantID: &str, filePath: &str, keep: F)
+    where
+        F: Fn(&str) -> bool,
+    {
         // println!("Hello world");
 
         // let words = lines_from_file("/Users/dushyant.bansal/work/rprojects/helloworld-tonic/words.txt"); //sample
@@ -65,6 +90,9 @@ impl Indexer {
         let mut trie = Node::new();
 
         for word in words.iter() {
+            if !keep(word) {
+                continue;
+            }
             // add word to prefix trie
             // let mut trie_ref = &mut trie;
             // trie::addWord(&mut trie, word);
