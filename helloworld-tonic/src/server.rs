@@ -8,6 +8,7 @@ mod partition;
 
 use indexer::Indexer;
 use partition::{env_or_default, PrefixRange};
+use tonic_health::server::health_reporter;
 // GRPC server implementation for prefix search service.
 // 
 // This module implements a GRPC server that provides prefix-based word search functionality
@@ -48,7 +49,9 @@ pub mod hello_world {
 }
 
 pub struct MyGreeter {
-    indexer: Indexer
+    indexer: Indexer,
+    node_id: String,
+    include_node_id_in_reply: bool,
 }
 
 impl MyGreeter {
@@ -57,6 +60,9 @@ impl MyGreeter {
         let prefix_range = env_or_default("PREFIX_RANGE", "a-z");
         let prefix_range = PrefixRange::parse(&prefix_range)
             .unwrap_or_else(|e| panic!("invalid PREFIX_RANGE: {}", e));
+        let node_id = env_or_default("NODE_ID", "node");
+        let include_node_id_in_reply =
+            env_or_default("INCLUDE_NODE_ID_IN_REPLY", "0") == "1";
 
         let mut indexer = Indexer::new();
         let tenant1 = "thoughtspot";
@@ -68,12 +74,14 @@ impl MyGreeter {
         indexer.indexFileForPrefixRange(&tenant2, &path2, prefix_range.start, prefix_range.end);
 
         let greeter = MyGreeter {
-            indexer: indexer
+            indexer,
+            node_id: node_id.clone(),
+            include_node_id_in_reply,
         };
 
         println!(
-            "Server configured: BIND_ADDR={} PREFIX_RANGE={}-{}",
-            bind_addr, prefix_range.start, prefix_range.end
+            "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{}",
+            node_id, bind_addr, prefix_range.start, prefix_range.end
         );
 
         greeter
@@ -94,8 +102,13 @@ impl Greeter for MyGreeter {
         //search for this word in
         let matches = self.indexer.prefixMatch(&tenant, &word);
 
+        let node_suffix = if self.include_node_id_in_reply {
+            format!(" node={}", self.node_id)
+        } else {
+            "".to_string()
+        };
         let reply = HelloReply {
-            message: format!("Hello {} matches: {:?}!", word, matches),
+            message: format!("Hello {}{} matches: {:?}!", word, node_suffix, matches),
         };
 
         Ok(Response::new(reply))
@@ -109,7 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let greeter = MyGreeter::default();
     let greeter = MyGreeter::new();
 
+    let (mut reporter, health_service) = health_reporter();
+    reporter
+        .set_serving::<GreeterServer<MyGreeter>>()
+        .await;
+
     Server::builder()
+        .add_service(health_service)
         .add_service(GreeterServer::new(greeter))
         .serve(addr)
         .await?;
