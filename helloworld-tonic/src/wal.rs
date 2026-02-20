@@ -53,3 +53,19 @@ pub async fn replay_words(path: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wal_append_and_replay_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = dir.path().join("power.wal");
+
+        append_word(&wal, "jokerz", false).await.unwrap();
+        append_word(&wal, "jokers", false).await.unwrap();
+
+        let words = replay_words(&wal).await.unwrap();
+        assert_eq!(words, vec!["jokerz".to_string(), "jokers".to_string()]);
+    }
+}

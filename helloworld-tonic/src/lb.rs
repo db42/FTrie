@@ -16,7 +16,9 @@ use tokio::sync::RwLock;
 use tokio::time;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
+use tonic_health::server::health_reporter;
 use tonic::transport::Channel;
+use tonic::Code;
 
 pub mod hello_world {
     tonic::include_proto!("helloworld"); 
@@ -37,6 +39,41 @@ impl HealthState {
             consecutive_successes: 0,
         }
     }
+}
+
+fn normalize_and_validate_word(s: &str) -> Result<String, Status> {
+    let w = s.trim().to_ascii_lowercase();
+    if w.is_empty() {
+        return Err(Status::invalid_argument("word must be non-empty"));
+    }
+    if !w.chars().all(|c| ('a'..='z').contains(&c)) {
+        return Err(Status::invalid_argument("word must contain only a-z"));
+    }
+    Ok(w)
+}
+
+fn normalize_and_validate_prefix(s: &str) -> Result<String, Status> {
+    let p = s.trim().to_ascii_lowercase();
+    if p.is_empty() {
+        return Err(Status::invalid_argument("prefix must be non-empty"));
+    }
+    if !p.chars().all(|c| ('a'..='z').contains(&c)) {
+        return Err(Status::invalid_argument("prefix must contain only a-z"));
+    }
+    Ok(p)
+}
+
+fn status_indicates_backend_fault(code: Code) -> bool {
+    // Only treat transport-ish statuses as backend health signals.
+    // Application errors (INVALID_ARGUMENT, etc.) should not poison health.
+    matches!(
+        code,
+        Code::Unavailable
+            | Code::DeadlineExceeded
+            | Code::Internal
+            | Code::Unknown
+            | Code::ResourceExhausted
+    )
 }
 
 pub struct LoadBalancer {
@@ -131,11 +168,12 @@ impl Greeter for LoadBalancer {
     ) -> Result<Response<HelloReply>, Status> {
         println!("Load balancer received request: {:?}", request);
 
-        let inner = request.get_ref().clone();
-        let prefix = inner.name.as_str();
+        let mut inner = request.get_ref().clone();
+        let prefix = normalize_and_validate_prefix(inner.name.as_str())?;
+        inner.name = prefix.clone();
         let partition = self
             .partition_map
-            .route(prefix)
+            .route(&prefix)
             .ok_or_else(|| Status::invalid_argument("prefix must start with a-z"))?;
 
         if self.read_quorum > partition.backends.len() {
@@ -172,10 +210,7 @@ impl Greeter for LoadBalancer {
                     let mut client = GreeterClient::connect(backend.clone())
                         .await
                         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                    let resp = client
-                        .say_hello(Request::new(req))
-                        .await
-                        .map_err(|e| Status::unavailable(format!("request failed: {}", e)))?;
+                    let resp = client.say_hello(Request::new(req)).await?;
                     Ok::<HelloReply, tonic::Status>(resp.into_inner())
                 };
                 let res = time::timeout(timeout, fut).await;
@@ -200,7 +235,15 @@ impl Greeter for LoadBalancer {
                     }
                 }
                 Ok(Err(e)) => {
-                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    let ok_for_health = !status_indicates_backend_fault(e.code());
+                    mark_backend_result(
+                        &self.health,
+                        &backend,
+                        ok_for_health,
+                        self.fail_after,
+                        self.recover_after,
+                    )
+                    .await;
                     println!("backend read failed: backend={} err={}", backend, e);
                 }
                 Err(_) => {
@@ -223,11 +266,12 @@ impl Greeter for LoadBalancer {
         &self,
         request: Request<PutWordRequest>,
     ) -> Result<Response<PutWordReply>, Status> {
-        let inner = request.get_ref().clone();
-        let word = inner.word.as_str();
+        let mut inner = request.get_ref().clone();
+        let word = normalize_and_validate_word(inner.word.as_str())?;
+        inner.word = word.clone();
         let partition = self
             .partition_map
-            .route(word)
+            .route(&word)
             .ok_or_else(|| Status::invalid_argument("word must start with a-z"))?;
 
         if self.write_quorum > partition.backends.len() {
@@ -258,10 +302,7 @@ impl Greeter for LoadBalancer {
                     let mut client = GreeterClient::connect(backend.clone())
                         .await
                         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                    let resp = client
-                        .put_word(Request::new(req))
-                        .await
-                        .map_err(|e| Status::unavailable(format!("request failed: {}", e)))?;
+                    let resp = client.put_word(Request::new(req)).await?;
                     Ok::<PutWordReply, tonic::Status>(resp.into_inner())
                 };
                 let res = time::timeout(timeout, fut).await;
@@ -300,7 +341,15 @@ impl Greeter for LoadBalancer {
                     }
                 }
                 Ok(Err(e)) => {
-                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    let ok_for_health = !status_indicates_backend_fault(e.code());
+                    mark_backend_result(
+                        &self.health,
+                        &backend,
+                        ok_for_health,
+                        self.fail_after,
+                        self.recover_after,
+                    )
+                    .await;
                     println!("backend write failed: backend={} err={}", backend, e);
                 }
                 Err(_) => {
@@ -386,7 +435,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Load balancer listening on {}", addr);
 
+    let (mut reporter, health_service) = health_reporter();
+    reporter
+        .set_serving::<GreeterServer<LoadBalancer>>()
+        .await;
+
     Server::builder()
+        .add_service(health_service)
         .add_service(GreeterServer::new(lb))
         .serve(addr)
         .await?;

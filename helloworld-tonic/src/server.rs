@@ -6,13 +6,11 @@ use hello_world::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 mod indexer;
 mod partition;
 mod wal;
+mod store;
 
-use indexer::Indexer;
 use partition::{env_or_default, PrefixRange};
 use tonic_health::server::health_reporter;
-use tokio::sync::RwLock;
-use tokio::fs;
-use wal::{append_word, ensure_dir, replay_words, wal_path};
+use store::ShardStore;
 // GRPC server implementation for prefix search service.
 // 
 // This module implements a GRPC server that provides prefix-based word search functionality
@@ -53,34 +51,9 @@ pub mod hello_world {
 }
 
 pub struct MyGreeter {
-    indexer: RwLock<Indexer>,
     node_id: String,
     include_node_id_in_reply: bool,
-    prefix_range: PrefixRange,
-    data_dir: String,
-    fsync: bool,
-}
-
-fn normalize_and_validate_word(s: &str) -> Result<String, Status> {
-    let w = s.trim().to_ascii_lowercase();
-    if w.is_empty() {
-        return Err(Status::invalid_argument("word must be non-empty"));
-    }
-    if !w.chars().all(|c| ('a'..='z').contains(&c)) {
-        return Err(Status::invalid_argument("word must contain only a-z"));
-    }
-    Ok(w)
-}
-
-fn normalize_and_validate_prefix(s: &str) -> Result<String, Status> {
-    let p = s.trim().to_ascii_lowercase();
-    if p.is_empty() {
-        return Err(Status::invalid_argument("prefix must be non-empty"));
-    }
-    if !p.chars().all(|c| ('a'..='z').contains(&c)) {
-        return Err(Status::invalid_argument("prefix must contain only a-z"));
-    }
-    Ok(p)
+    store: ShardStore,
 }
 
 impl MyGreeter {
@@ -91,57 +64,14 @@ impl MyGreeter {
         data_dir: String,
         fsync: bool,
     ) -> Self {
-        ensure_dir(&data_dir)
+        let store = ShardStore::open(prefix_range, data_dir, fsync)
             .await
-            .unwrap_or_else(|e| panic!("failed to create DATA_DIR {}: {}", data_dir, e));
-
-        let mut indexer = Indexer::new();
-        let tenant1 = "thoughtspot";
-        let path1 = "./words.txt";
-        indexer.indexFileForPrefixRange(&tenant1, &path1, prefix_range.start, prefix_range.end);
-
-        let tenant2 = "power";
-        let path2 = "./words_alpha.txt";
-        indexer.indexFileForPrefixRange(&tenant2, &path2, prefix_range.start, prefix_range.end);
-
-        // Replay WAL entries for all tenants present in DATA_DIR (in-range only).
-        let mut dir = fs::read_dir(&data_dir)
-            .await
-            .unwrap_or_else(|e| panic!("failed to read DATA_DIR {}: {}", data_dir, e));
-        while let Some(entry) = dir
-            .next_entry()
-            .await
-            .unwrap_or_else(|e| panic!("failed to scan DATA_DIR {}: {}", data_dir, e))
-        {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("wal") {
-                continue;
-            }
-            let tenant = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(t) if !t.trim().is_empty() => t.to_string(),
-                _ => continue,
-            };
-            let words = replay_words(&path)
-                .await
-                .unwrap_or_else(|e| panic!("failed to replay WAL {:?}: {}", path, e));
-            for w in words {
-                if !prefix_range.contains_first_char_of(&w) {
-                    continue;
-                }
-                // Ignore invalid WAL lines (keeps recovery robust).
-                if let Ok(w) = normalize_and_validate_word(&w) {
-                    indexer.putWord(&tenant, &w);
-                }
-            }
-        }
+            .unwrap_or_else(|e| panic!("failed to open store: {}", e));
 
         MyGreeter {
-            indexer: RwLock::new(indexer),
             node_id,
             include_node_id_in_reply,
-            prefix_range,
-            data_dir,
-            fsync,
+            store,
         }
     }
 }
@@ -155,10 +85,9 @@ impl Greeter for MyGreeter {
     ) -> Result<Response<HelloReply>, Status> {
         println!("Got a request: {:?}", request);
         let inner = request.into_inner();
-        let word = normalize_and_validate_prefix(&inner.name)?;
+        let prefix = inner.name.trim().to_ascii_lowercase();
         let tenant = inner.tenant;
-        let indexer = self.indexer.read().await;
-        let matches = indexer.prefixMatch(&tenant, &word);
+        let matches = self.store.prefix_match(&tenant, &prefix).await?;
 
         let node_suffix = if self.include_node_id_in_reply {
             format!(" node={}", self.node_id)
@@ -166,7 +95,7 @@ impl Greeter for MyGreeter {
             "".to_string()
         };
         let reply = HelloReply {
-            message: format!("Hello {}{} matches: {:?}!", word, node_suffix, matches),
+            message: format!("Hello {}{} matches: {:?}!", prefix, node_suffix, matches),
         };
 
         Ok(Response::new(reply))
@@ -178,22 +107,7 @@ impl Greeter for MyGreeter {
     ) -> Result<Response<PutWordReply>, Status> {
         let inner = request.into_inner();
         let tenant = inner.tenant;
-        let word = normalize_and_validate_word(&inner.word)?;
-
-        if tenant.trim().is_empty() {
-            return Err(Status::invalid_argument("tenant must be non-empty"));
-        }
-        if !self.prefix_range.contains_first_char_of(&word) {
-            return Err(Status::invalid_argument("word does not belong to this shard"));
-        }
-
-        let wal = wal_path(&self.data_dir, &tenant);
-        append_word(&wal, &word, self.fsync)
-            .await
-            .map_err(|e| Status::internal(format!("wal append failed: {}", e)))?;
-
-        let mut indexer = self.indexer.write().await;
-        indexer.putWord(&tenant, &word);
+        self.store.put_word(&tenant, &inner.word).await?;
 
         Ok(Response::new(PutWordReply {
             applied: true,
@@ -227,8 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={} FSYNC={}",
         node_id,
         bind_addr,
-        greeter.prefix_range.start,
-        greeter.prefix_range.end,
+        greeter.store.prefix_range().start,
+        greeter.store.prefix_range().end,
         data_dir,
         if fsync { 1 } else { 0 }
     );

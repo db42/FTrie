@@ -1,0 +1,223 @@
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use tonic::transport::Channel;
+use tonic::{Request, Status};
+use tonic_health::pb::health_client::HealthClient;
+use tonic_health::pb::HealthCheckRequest;
+
+pub mod hello_world {
+    tonic::include_proto!("helloworld");
+}
+
+use hello_world::greeter_client::GreeterClient;
+use hello_world::{HelloRequest, PutWordRequest};
+
+pub fn blackbox_enabled() -> bool {
+    std::env::var("RUN_BLACKBOX_IT").ok().as_deref() == Some("1")
+}
+
+pub fn pick_unused_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    listener.local_addr().unwrap().port()
+}
+
+fn bin_path(name: &str) -> String {
+    match name {
+        "helloworld-server" => option_env!("CARGO_BIN_EXE_helloworld-server")
+            .or(option_env!("CARGO_BIN_EXE_helloworld_server"))
+            .expect("CARGO_BIN_EXE_helloworld-server not set; run via cargo test")
+            .to_string(),
+        "helloworld-lb" => option_env!("CARGO_BIN_EXE_helloworld-lb")
+            .or(option_env!("CARGO_BIN_EXE_helloworld_lb"))
+            .expect("CARGO_BIN_EXE_helloworld-lb not set; run via cargo test")
+            .to_string(),
+        _ => panic!("unknown binary {}", name),
+    }
+}
+
+pub struct Proc {
+    child: Child,
+    log_path: PathBuf,
+}
+
+impl Proc {
+    pub fn read_log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().ok().flatten()
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub async fn wait_healthy(proc: &mut Proc, addr: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = proc.try_wait() {
+            panic!(
+                "process exited early (status={}) while waiting for health at {}\nlog:\n{}",
+                status,
+                addr,
+                proc.read_log()
+            );
+        }
+
+        let res = async {
+            let channel = Channel::from_shared(addr.to_string())
+                .map_err(|e| Status::unavailable(format!("health channel init failed: {}", e)))?
+                .connect()
+                .await
+                .map_err(|e| Status::unavailable(format!("health connect failed: {}", e)))?;
+            let mut client = HealthClient::new(channel);
+            let req = HealthCheckRequest {
+                service: "".to_string(),
+            };
+            client.check(Request::new(req)).await?;
+            Ok::<(), Status>(())
+        }
+        .await;
+
+        if res.is_ok() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for health at {}\nlog:\n{}",
+                addr,
+                proc.read_log()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub fn spawn_server(
+    port: u16,
+    node_id: &str,
+    prefix_range: &str,
+    data_dir: &str,
+    include_node_id_in_reply: bool,
+    fsync: bool,
+) -> Proc {
+    let addr = format!("127.0.0.1:{}", port);
+    let log_path =
+        std::env::temp_dir().join(format!("helloworld-server-{}-{}.log", node_id, port));
+    let log = std::fs::File::create(&log_path).expect("create server log");
+    let log_err = log.try_clone().expect("clone server log");
+
+    let child = Command::new(bin_path("helloworld-server"))
+        .env("BIND_ADDR", addr)
+        .env("NODE_ID", node_id)
+        .env("PREFIX_RANGE", prefix_range)
+        .env("DATA_DIR", data_dir)
+        .env("FSYNC", if fsync { "1" } else { "0" })
+        .env(
+            "INCLUDE_NODE_ID_IN_REPLY",
+            if include_node_id_in_reply { "1" } else { "0" },
+        )
+        .env("DISABLE_STATIC_INDEX", "1")
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .expect("spawn server");
+
+    Proc { child, log_path }
+}
+
+pub fn spawn_lb(port: u16, partition_map: &str, r: usize, w: usize) -> Proc {
+    let addr = format!("127.0.0.1:{}", port);
+    let log_path = std::env::temp_dir().join(format!("helloworld-lb-{}.log", port));
+    let log = std::fs::File::create(&log_path).expect("create lb log");
+    let log_err = log.try_clone().expect("clone lb log");
+
+    let child = Command::new(bin_path("helloworld-lb"))
+        .env("BIND_ADDR", addr)
+        .env("PARTITION_MAP", partition_map)
+        .env("LB_POLICY", "random")
+        .env("LB_MAX_ATTEMPTS", "3")
+        .env("LB_HEALTH_INTERVAL_MS", "50")
+        .env("LB_FAIL_AFTER", "1")
+        .env("LB_RECOVER_AFTER", "1")
+        .env("READ_TIMEOUT_MS", "500")
+        .env("WRITE_TIMEOUT_MS", "500")
+        .env("R", r.to_string())
+        .env("W", w.to_string())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .expect("spawn lb");
+
+    Proc { child, log_path }
+}
+
+pub async fn say_hello_result(addr: &str, tenant: &str, name: &str) -> Result<String, Status> {
+    let mut client = GreeterClient::connect(addr.to_string())
+        .await
+        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+    let req = HelloRequest {
+        name: name.to_string(),
+        tenant: tenant.to_string(),
+    };
+    let resp = client.say_hello(Request::new(req)).await?;
+    Ok(resp.into_inner().message)
+}
+
+pub async fn say_hello(addr: &str, tenant: &str, name: &str) -> String {
+    say_hello_result(addr, tenant, name).await.unwrap()
+}
+
+pub async fn put_word(addr: &str, tenant: &str, word: &str) -> Result<(), Status> {
+    let mut client = GreeterClient::connect(addr.to_string())
+        .await
+        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+    let req = PutWordRequest {
+        word: word.to_string(),
+        tenant: tenant.to_string(),
+    };
+    client.put_word(Request::new(req)).await?;
+    Ok(())
+}
+
+pub async fn wait_until_contains(addr: &str, tenant: &str, prefix: &str, needle: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let msg = say_hello(addr, tenant, prefix).await;
+        if msg.contains(needle) {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for {} to contain {}", addr, needle);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub async fn assert_not_contains_for(
+    addr: &str,
+    tenant: &str,
+    prefix: &str,
+    needle: &str,
+    dur: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + dur;
+    loop {
+        let msg = say_hello(addr, tenant, prefix).await;
+        if msg.contains(needle) {
+            panic!("expected {} to not contain {}, but it did", addr, needle);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
