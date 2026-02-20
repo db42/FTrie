@@ -251,28 +251,39 @@ Cluster configuration:
 
 ## Phased Delivery
 
-### Phase 1: Multi-Node Foundation (Week 1-2)
-- Implement partition map and prefix routing
+### Phase 1: Multi-Node Foundation (Implemented)
+- Implement prefix partition map (`PARTITION_MAP`) and prefix routing
 - Modify LB to route based on prefix
-- Deploy 3 nodes with static partition assignment
+- Deploy multiple nodes with static partition assignment (`PREFIX_RANGE`)
 
-### Phase 2: Consensus & Replication (Week 3-4)
-- Integrate `openraft` for leader election
-- Implement log replication for writes
-- Add follower reads
+### Phase 2: Read Replicas + HA (Implemented)
+- Support multiple replicas per shard (replica lists in `PARTITION_MAP` via `|`)
+- Add standard gRPC health checks on servers (`grpc.health.v1.Health`)
+- LB does random replica selection + active health probing + bounded retries/failover
 
-### Phase 3: Caching & Observability (Week 5)
-- Redis integration
-- Prometheus metrics
-- Grafana dashboards
+### Phase 3: Writes + Quorums + Durability (Implemented)
+- Add write API (`PutWord`)
+- Replication model: LB fanout to replicas and acknowledge based on `W` successes
+- Read model: require `R` successful replica responses
+- Persist writes per replica via WAL and replay on restart (`DATA_DIR/*.wal`, `FSYNC` optional)
 
-### Phase 4: Kubernetes & Production (Week 6)
-- StatefulSet deployment
+### Phase 4: Consensus (Raft) + Leader-Based Replication (Next)
+- Integrate `openraft` for per-shard leader election and membership changes
+- Replace LB fanout writes with leader-coordinated replication (log replication + commit index)
+- Define consistent read behavior (leader reads or follower reads with leases/read-index)
+
+### Phase 5: Caching + Observability
+- Redis integration for hot prefixes
+- Prometheus metrics + Grafana dashboards
+- Structured logging + tracing
+
+### Phase 6: Kubernetes + Production Hardening
+- StatefulSet deployment with PVCs for WAL/snapshots
 - CI/CD pipeline
-- Load testing & benchmarking
+- Load testing + benchmarking and failure injection
 
-### Phase 5: Documentation & Blog (Week 7)
-- Architecture documentation
+### Phase 7: Documentation + Blog
+- Architecture documentation and operational runbooks
 - "Building a Distributed Prefix Search" blog series
 
 ---

@@ -8,3 +8,7 @@ helloworld-tonic/*.tar
 
 # Placeholder manifests
 helloworld-tonic/helloworld-tonic.yaml
+
+# Local data dirs (WAL / test artifacts)
+helloworld-tonic/data/
+helloworld-tonic/data-*/

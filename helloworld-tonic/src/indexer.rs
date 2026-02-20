@@ -116,4 +116,12 @@ impl Indexer {
             return [].to_vec();
         }
     }
+
+    pub fn putWord(&mut self, tenantID: &str, word: &str) {
+        let trie = self
+            .tenantTrieMap
+            .entry(tenantID.to_string())
+            .or_insert_with(Node::new);
+        trie::addWord(trie, word);
+    }
 }

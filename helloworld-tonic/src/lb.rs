@@ -1,7 +1,7 @@
 
 use tonic::{transport::Server, Request, Response, Status};
 use hello_world::greeter_server::{Greeter, GreeterServer};
-use hello_world::{HelloReply, HelloRequest};
+use hello_world::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 use hello_world::greeter_client::GreeterClient;
 
 mod partition;
@@ -11,6 +11,7 @@ use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinSet;
 use tokio::sync::RwLock;
 use tokio::time;
 use tonic_health::pb::health_client::HealthClient;
@@ -44,6 +45,10 @@ pub struct LoadBalancer {
     max_attempts: usize,
     fail_after: u32,
     recover_after: u32,
+    read_quorum: usize,
+    write_quorum: usize,
+    read_timeout: Duration,
+    write_timeout: Duration,
 }
 
 async fn mark_backend_result(
@@ -133,7 +138,15 @@ impl Greeter for LoadBalancer {
             .route(prefix)
             .ok_or_else(|| Status::invalid_argument("prefix must start with a-z"))?;
 
-        // Phase 2: random replica selection + bounded retries.
+        if self.read_quorum > partition.backends.len() {
+            return Err(Status::invalid_argument(format!(
+                "R={} cannot be satisfied with RF={}",
+                self.read_quorum,
+                partition.backends.len()
+            )));
+        }
+
+        // Phase 3: random replica selection + read quorum (R successes).
         let mut candidates: Vec<String> = Vec::new();
         for b in &partition.backends {
             if is_backend_healthy(&self.health, b).await {
@@ -147,47 +160,163 @@ impl Greeter for LoadBalancer {
 
         candidates.shuffle(&mut rand::thread_rng());
 
-        let attempts = std::cmp::min(self.max_attempts, candidates.len().max(1));
-        for backend in candidates.into_iter().take(attempts) {
-            let res = async {
-                let mut client = GreeterClient::connect(backend.clone())
-                    .await
-                    .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                client
-                    .say_hello(Request::new(inner.clone()))
-                    .await
-                    .map_err(|e| Status::unavailable(format!("request failed: {}", e)))
-            }
-            .await;
+        let attempts = std::cmp::min(self.max_attempts.max(self.read_quorum), candidates.len());
+        let selected: Vec<String> = candidates.into_iter().take(attempts).collect();
 
+        let mut set = JoinSet::new();
+        for backend in selected {
+            let req = inner.clone();
+            let timeout = self.read_timeout;
+            set.spawn(async move {
+                let fut = async {
+                    let mut client = GreeterClient::connect(backend.clone())
+                        .await
+                        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+                    let resp = client
+                        .say_hello(Request::new(req))
+                        .await
+                        .map_err(|e| Status::unavailable(format!("request failed: {}", e)))?;
+                    Ok::<HelloReply, tonic::Status>(resp.into_inner())
+                };
+                let res = time::timeout(timeout, fut).await;
+                (backend, res)
+            });
+        }
+
+        let mut successes = 0usize;
+        let mut first_reply: Option<HelloReply> = None;
+        while let Some(joined) = set.join_next().await {
+            let (backend, res) = joined.map_err(|e| Status::internal(format!("task failed: {}", e)))?;
             match res {
-                Ok(resp) => {
-                    mark_backend_result(
-                        &self.health,
-                        &backend,
-                        true,
-                        self.fail_after,
-                        self.recover_after,
-                    )
-                    .await;
-                    return Ok(resp);
+                Ok(Ok(reply)) => {
+                    mark_backend_result(&self.health, &backend, true, self.fail_after, self.recover_after).await;
+                    successes += 1;
+                    if first_reply.is_none() {
+                        first_reply = Some(reply);
+                    }
+                    if successes >= self.read_quorum {
+                        set.abort_all();
+                        return Ok(Response::new(first_reply.unwrap()));
+                    }
                 }
-                Err(e) => {
-                    mark_backend_result(
-                        &self.health,
-                        &backend,
-                        false,
-                        self.fail_after,
-                        self.recover_after,
-                    )
-                    .await;
-                    println!("backend attempt failed: backend={} err={}", backend, e);
-                    continue;
+                Ok(Err(e)) => {
+                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    println!("backend read failed: backend={} err={}", backend, e);
                 }
+                Err(_) => {
+                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    println!("backend read timeout: backend={}", backend);
+                }
+            }
+
+            let remaining = set.len();
+            if successes + remaining < self.read_quorum {
+                set.abort_all();
+                break;
             }
         }
 
         Err(Status::unavailable("no healthy backends available"))
+    }
+
+    async fn put_word(
+        &self,
+        request: Request<PutWordRequest>,
+    ) -> Result<Response<PutWordReply>, Status> {
+        let inner = request.get_ref().clone();
+        let word = inner.word.as_str();
+        let partition = self
+            .partition_map
+            .route(word)
+            .ok_or_else(|| Status::invalid_argument("word must start with a-z"))?;
+
+        if self.write_quorum > partition.backends.len() {
+            return Err(Status::invalid_argument(format!(
+                "W={} cannot be satisfied with RF={}",
+                self.write_quorum,
+                partition.backends.len()
+            )));
+        }
+
+        let mut candidates: Vec<String> = Vec::new();
+        for b in &partition.backends {
+            if is_backend_healthy(&self.health, b).await {
+                candidates.push(b.clone());
+            }
+        }
+        if candidates.is_empty() {
+            candidates = partition.backends.clone();
+        }
+        candidates.shuffle(&mut rand::thread_rng());
+
+        let mut set = JoinSet::new();
+        for backend in candidates {
+            let req = inner.clone();
+            let timeout = self.write_timeout;
+            set.spawn(async move {
+                let fut = async {
+                    let mut client = GreeterClient::connect(backend.clone())
+                        .await
+                        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+                    let resp = client
+                        .put_word(Request::new(req))
+                        .await
+                        .map_err(|e| Status::unavailable(format!("request failed: {}", e)))?;
+                    Ok::<PutWordReply, tonic::Status>(resp.into_inner())
+                };
+                let res = time::timeout(timeout, fut).await;
+                (backend, res)
+            });
+        }
+
+        let mut successes = 0usize;
+        while let Some(joined) = set.join_next().await {
+            let (backend, res) = joined.map_err(|e| Status::internal(format!("task failed: {}", e)))?;
+            match res {
+                Ok(Ok(_reply)) => {
+                    mark_backend_result(&self.health, &backend, true, self.fail_after, self.recover_after).await;
+                    successes += 1;
+                    if successes >= self.write_quorum {
+                        // Quorum achieved: ACK immediately, but allow remaining replica writes
+                        // to continue in the background to reduce divergence.
+                        let mut background = set;
+                        let health = self.health.clone();
+                        let fail_after = self.fail_after;
+                        let recover_after = self.recover_after;
+                        tokio::spawn(async move {
+                            while let Some(joined) = background.join_next().await {
+                                let Ok((backend, res)) = joined else {
+                                    continue;
+                                };
+                                let ok = matches!(res, Ok(Ok(_)));
+                                mark_backend_result(&health, &backend, ok, fail_after, recover_after).await;
+                            }
+                        });
+
+                        return Ok(Response::new(PutWordReply {
+                            applied: true,
+                            message: "ok".to_string(),
+                        }));
+                    }
+                }
+                Ok(Err(e)) => {
+                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    println!("backend write failed: backend={} err={}", backend, e);
+                }
+                Err(_) => {
+                    mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                    println!("backend write timeout: backend={}", backend);
+                }
+            }
+
+            let remaining = set.len();
+            if successes + remaining < self.write_quorum {
+                set.abort_all();
+                break;
+            }
+        }
+
+        Err(Status::unavailable("write quorum not met"))
     }
 }
 
@@ -235,6 +364,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("LB configured: PARTITION_MAP={}", pm_str);
 
+    let read_quorum: usize = env_or_default("R", "1").parse().unwrap_or(1).max(1);
+    let write_quorum: usize = env_or_default("W", "1").parse().unwrap_or(1).max(1);
+    let read_timeout_ms: u64 = env_or_default("READ_TIMEOUT_MS", "200").parse().unwrap_or(200);
+    let write_timeout_ms: u64 = env_or_default("WRITE_TIMEOUT_MS", "500").parse().unwrap_or(500);
+
     let lb = LoadBalancer {
         partition_map,
         health,
@@ -244,6 +378,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .max(1),
         fail_after: fail_after.max(1),
         recover_after: recover_after.max(1),
+        read_quorum,
+        write_quorum,
+        read_timeout: Duration::from_millis(read_timeout_ms.max(10)),
+        write_timeout: Duration::from_millis(write_timeout_ms.max(10)),
     };
 
     println!("Load balancer listening on {}", addr);

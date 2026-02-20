@@ -3,6 +3,7 @@ package helloworld;
 
 service Greeter {
     rpc SayHello (HelloRequest) returns (HelloReply);
+    rpc PutWord (PutWordRequest) returns (PutWordReply);
 }
 
 message HelloRequest {
@@ -12,4 +13,14 @@ message HelloRequest {
 
 message HelloReply {
     string message = 1;
+}
+
+message PutWordRequest {
+    string word = 1;
+    string tenant = 2;
+}
+
+message PutWordReply {
+    bool applied = 1;
+    string message = 2;
 }
