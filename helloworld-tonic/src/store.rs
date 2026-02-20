@@ -128,12 +128,26 @@ impl ShardStore {
     }
 
     pub async fn prefix_match(&self, tenant: &str, prefix: &str) -> Result<Vec<String>, Status> {
+        self.prefix_match_top_k(tenant, prefix, 0).await
+    }
+
+    pub async fn prefix_match_top_k(
+        &self,
+        tenant: &str,
+        prefix: &str,
+        top_k: u32,
+    ) -> Result<Vec<String>, Status> {
         if tenant.trim().is_empty() {
             return Err(Status::invalid_argument("tenant must be non-empty"));
         }
         let prefix = normalize_and_validate_prefix(prefix)?;
         let indexer = self.indexer.read().await;
-        Ok(indexer.prefixMatch(tenant, &prefix))
+        let k = if top_k == 0 {
+            usize::MAX
+        } else {
+            top_k as usize
+        };
+        Ok(indexer.prefixMatchTopK(tenant, &prefix, k))
     }
 
     // Applies a validated write to the in-memory index.
@@ -240,5 +254,34 @@ mod tests {
 
         let matches = store2.prefix_match("power", "joker").await.unwrap();
         assert!(matches.contains(&"jokerz".to_string()));
+    }
+
+    #[tokio::test]
+    async fn prefix_match_top_k_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ShardStore::open_empty_for_tests(
+            PrefixRange::parse("a-z").unwrap(),
+            dir.path().to_str().unwrap().to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        store.put_word("power", "app").await.unwrap();
+        store.put_word("power", "apple").await.unwrap();
+        store.put_word("power", "apply").await.unwrap();
+
+        let r1 = store.prefix_match_top_k("power", "app", 1).await.unwrap();
+        assert_eq!(r1, vec!["app".to_string()]);
+
+        let r2 = store.prefix_match_top_k("power", "app", 2).await.unwrap();
+        assert_eq!(r2.len(), 2);
+        assert_eq!(r2[0], "app");
+
+        let r50 = store.prefix_match_top_k("power", "app", 50).await.unwrap();
+        assert_eq!(
+            r50,
+            vec!["app".to_string(), "apple".to_string(), "apply".to_string()]
+        );
     }
 }

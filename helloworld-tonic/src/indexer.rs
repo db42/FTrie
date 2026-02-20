@@ -117,6 +117,13 @@ impl Indexer {
         }
     }
 
+    pub fn prefixMatchTopK(&self, tenantID: &str, word: &str, top_k: usize) -> Vec<String> {
+        if let Some(trie) = self.tenantTrieMap.get(tenantID) {
+            return trie::prefixMatchTopK(trie, word, top_k);
+        }
+        Vec::new()
+    }
+
     pub fn putWord(&mut self, tenantID: &str, word: &str) {
         let trie = self
             .tenantTrieMap

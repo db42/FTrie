@@ -9,10 +9,13 @@ service Greeter {
 message HelloRequest {
     string name = 1;
     string tenant = 2;
+    uint32 top_k = 3;
 }
 
 message HelloReply {
     string message = 1;
+    repeated string matches = 2;
+    string node_id = 3;
 }
 
 message PutWordRequest {

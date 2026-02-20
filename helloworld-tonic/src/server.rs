@@ -87,7 +87,11 @@ impl Greeter for MyGreeter {
         let inner = request.into_inner();
         let prefix = inner.name.trim().to_ascii_lowercase();
         let tenant = inner.tenant;
-        let matches = self.store.prefix_match(&tenant, &prefix).await?;
+        let top_k = inner.top_k;
+        let matches = self
+            .store
+            .prefix_match_top_k(&tenant, &prefix, top_k)
+            .await?;
 
         let node_suffix = if self.include_node_id_in_reply {
             format!(" node={}", self.node_id)
@@ -95,7 +99,19 @@ impl Greeter for MyGreeter {
             "".to_string()
         };
         let reply = HelloReply {
-            message: format!("Hello {}{} matches: {:?}!", prefix, node_suffix, matches),
+            message: format!(
+                "Hello {}{} matches={} top_k={}",
+                prefix,
+                node_suffix,
+                matches.len(),
+                if top_k == 0 { -1i32 } else { top_k as i32 }
+            ),
+            matches,
+            node_id: if self.include_node_id_in_reply {
+                self.node_id.clone()
+            } else {
+                "".to_string()
+            },
         };
 
         Ok(Response::new(reply))

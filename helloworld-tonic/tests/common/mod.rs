@@ -15,7 +15,7 @@ pub mod hello_world {
 }
 
 use hello_world::greeter_client::GreeterClient;
-use hello_world::{HelloRequest, PutWordRequest};
+use hello_world::{HelloReply, HelloRequest, PutWordRequest};
 
 pub fn blackbox_enabled() -> bool {
     std::env::var("RUN_BLACKBOX_IT").ok().as_deref() == Some("1")
@@ -144,14 +144,34 @@ pub fn spawn_server(
     include_node_id_in_reply: bool,
     fsync: bool,
 ) -> Proc {
+    spawn_server_with_env(
+        port,
+        node_id,
+        prefix_range,
+        data_dir,
+        include_node_id_in_reply,
+        fsync,
+        &[],
+    )
+}
+
+pub fn spawn_server_with_env(
+    port: u16,
+    node_id: &str,
+    prefix_range: &str,
+    data_dir: &str,
+    include_node_id_in_reply: bool,
+    fsync: bool,
+    extra_env: &[(String, String)],
+) -> Proc {
     let addr = format!("127.0.0.1:{}", port);
     let log_path =
         std::env::temp_dir().join(format!("helloworld-server-{}-{}.log", node_id, port));
     let log = std::fs::File::create(&log_path).expect("create server log");
     let log_err = log.try_clone().expect("clone server log");
 
-    let child = Command::new(bin_path("helloworld-server"))
-        .env("BIND_ADDR", addr)
+    let mut cmd = Command::new(bin_path("helloworld-server"));
+    cmd.env("BIND_ADDR", addr)
         .env("NODE_ID", node_id)
         .env("PREFIX_RANGE", prefix_range)
         .env("DATA_DIR", data_dir)
@@ -162,8 +182,13 @@ pub fn spawn_server(
         )
         .env("DISABLE_STATIC_INDEX", "1")
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()
+        .stderr(Stdio::from(log_err));
+
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+
+    let child = cmd.spawn()
         .expect("spawn server");
 
     Proc { child, log_path }
@@ -177,13 +202,23 @@ pub async fn start_lb(port: u16, partition_map: &str, r: usize, w: usize) -> (Pr
 }
 
 pub fn spawn_lb(port: u16, partition_map: &str, r: usize, w: usize) -> Proc {
+    spawn_lb_with_env(port, partition_map, r, w, &[])
+}
+
+pub fn spawn_lb_with_env(
+    port: u16,
+    partition_map: &str,
+    r: usize,
+    w: usize,
+    extra_env: &[(String, String)],
+) -> Proc {
     let addr = format!("127.0.0.1:{}", port);
     let log_path = std::env::temp_dir().join(format!("helloworld-lb-{}.log", port));
     let log = std::fs::File::create(&log_path).expect("create lb log");
     let log_err = log.try_clone().expect("clone lb log");
 
-    let child = Command::new(bin_path("helloworld-lb"))
-        .env("BIND_ADDR", addr)
+    let mut cmd = Command::new(bin_path("helloworld-lb"));
+    cmd.env("BIND_ADDR", addr)
         .env("PARTITION_MAP", partition_map)
         .env("LB_POLICY", "random")
         .env("LB_MAX_ATTEMPTS", "3")
@@ -195,20 +230,35 @@ pub fn spawn_lb(port: u16, partition_map: &str, r: usize, w: usize) -> Proc {
         .env("R", r.to_string())
         .env("W", w.to_string())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()
+        .stderr(Stdio::from(log_err));
+
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+
+    let child = cmd.spawn()
         .expect("spawn lb");
 
     Proc { child, log_path }
 }
 
 pub async fn say_hello_result(addr: &str, tenant: &str, name: &str) -> Result<String, Status> {
+    say_hello_result_top_k(addr, tenant, name, 0).await
+}
+
+pub async fn say_hello_result_top_k(
+    addr: &str,
+    tenant: &str,
+    name: &str,
+    top_k: u32,
+) -> Result<String, Status> {
     let mut client = GreeterClient::connect(addr.to_string())
         .await
         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
     let req = HelloRequest {
         name: name.to_string(),
         tenant: tenant.to_string(),
+        top_k,
     };
     let resp = client.say_hello(Request::new(req)).await?;
     Ok(resp.into_inner().message)
@@ -216,6 +266,30 @@ pub async fn say_hello_result(addr: &str, tenant: &str, name: &str) -> Result<St
 
 pub async fn say_hello(addr: &str, tenant: &str, name: &str) -> String {
     say_hello_result(addr, tenant, name).await.unwrap()
+}
+
+pub async fn say_hello_reply_result(
+    addr: &str,
+    tenant: &str,
+    name: &str,
+    top_k: u32,
+) -> Result<HelloReply, Status> {
+    let mut client = GreeterClient::connect(addr.to_string())
+        .await
+        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+    let req = HelloRequest {
+        name: name.to_string(),
+        tenant: tenant.to_string(),
+        top_k,
+    };
+    let resp = client.say_hello(Request::new(req)).await?;
+    Ok(resp.into_inner())
+}
+
+pub async fn say_hello_reply(addr: &str, tenant: &str, name: &str, top_k: u32) -> HelloReply {
+    say_hello_reply_result(addr, tenant, name, top_k)
+        .await
+        .unwrap()
 }
 
 pub async fn put_word(addr: &str, tenant: &str, word: &str) -> Result<(), Status> {

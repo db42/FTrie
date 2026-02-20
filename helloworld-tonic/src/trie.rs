@@ -124,6 +124,10 @@ fn findWord(trie: &Node, word: &str) -> bool {
 }
 
 pub fn prefixMatch(trie: &Node, prefix: &str) -> Vec<String> {
+    prefixMatchTopK(trie, prefix, usize::MAX)
+}
+
+pub fn prefixMatchTopK(trie: &Node, prefix: &str, top_k: usize) -> Vec<String> {
     let mut node = trie;
     for character in prefix.chars() {
         let index = (character as u32 - 97) as usize;
@@ -140,14 +144,19 @@ pub fn prefixMatch(trie: &Node, prefix: &str) -> Vec<String> {
 
 
     //do a dfs traversal starting from node and print all prefixMatches
-    let mut st = "";
-    let mut matches = dfs(&node, &prefix);
-    if (node.endOfWord == true) {
-        dbg!("match found");
-        matches.insert(0, prefix.to_string());
+    let mut matches: Vec<String> = Vec::new();
+    if node.endOfWord {
+        matches.push(prefix.to_string());
     }
 
-    return matches;
+    if matches.len() >= top_k {
+        matches.truncate(top_k);
+        return matches;
+    }
+
+    dfs_top_k(&node, prefix, top_k, &mut matches);
+    matches.truncate(top_k);
+    matches
 }
 
 fn dfs(trie: &Node, pre: &str) -> Vec<String> {
@@ -176,4 +185,71 @@ fn dfs(trie: &Node, pre: &str) -> Vec<String> {
     }
 
     return matches;
+}
+
+fn dfs_top_k(trie: &Node, pre: &str, top_k: usize, out: &mut Vec<String>) -> bool {
+    if out.len() >= top_k {
+        return true;
+    }
+
+    let mut has_child = false;
+    for index in 0..26 {
+        if out.len() >= top_k {
+            return true;
+        }
+        if let Some(child_node) = &trie.charMap[index] {
+            has_child = true;
+            let ascii_code = (index + 97) as u32;
+            let character = char::from_u32(ascii_code).unwrap();
+            let next = format!("{}{}", pre, character);
+            if child_node.endOfWord {
+                out.push(next.clone());
+                if out.len() >= top_k {
+                    return true;
+                }
+            }
+            if dfs_top_k(child_node, &next, top_k, out) {
+                return true;
+            }
+        }
+    }
+
+    if !has_child {
+        // Leaf node. Historical behavior returned the leaf word; we already emit end-of-word
+        // nodes above, so nothing to do here for top_k.
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_match_top_k_is_bounded_and_stable() {
+        let mut t = Node::new();
+        addWord(&mut t, "app");
+        addWord(&mut t, "apple");
+        addWord(&mut t, "apply");
+        addWord(&mut t, "apt");
+        addWord(&mut t, "banana");
+
+        assert_eq!(
+            prefixMatchTopK(&t, "app", 1),
+            vec!["app".to_string()]
+        );
+        assert_eq!(
+            prefixMatchTopK(&t, "app", 2),
+            vec!["app".to_string(), "apple".to_string()]
+        );
+        assert_eq!(
+            prefixMatchTopK(&t, "app", 50),
+            vec!["app".to_string(), "apple".to_string(), "apply".to_string()]
+        );
+        assert_eq!(
+            prefixMatchTopK(&t, "ap", 2),
+            vec!["app".to_string(), "apple".to_string()]
+        );
+        assert!(prefixMatchTopK(&t, "zzz", 10).is_empty());
+    }
 }
