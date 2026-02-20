@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -19,9 +21,21 @@ pub fn blackbox_enabled() -> bool {
     std::env::var("RUN_BLACKBOX_IT").ok().as_deref() == Some("1")
 }
 
+pub fn skip_if_not_blackbox() -> bool {
+    if !blackbox_enabled() {
+        eprintln!("skipping black-box IT; set RUN_BLACKBOX_IT=1 to enable");
+        return true;
+    }
+    false
+}
+
 pub fn pick_unused_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     listener.local_addr().unwrap().port()
+}
+
+pub fn http_addr(port: u16) -> String {
+    format!("http://127.0.0.1:{}", port)
 }
 
 fn bin_path(name: &str) -> String {
@@ -101,6 +115,27 @@ pub async fn wait_healthy(proc: &mut Proc, addr: &str, timeout: Duration) {
     }
 }
 
+pub async fn start_server(
+    port: u16,
+    node_id: &str,
+    prefix_range: &str,
+    data_dir: &str,
+    include_node_id_in_reply: bool,
+    fsync: bool,
+) -> (Proc, String) {
+    let addr = http_addr(port);
+    let mut proc = spawn_server(
+        port,
+        node_id,
+        prefix_range,
+        data_dir,
+        include_node_id_in_reply,
+        fsync,
+    );
+    wait_healthy(&mut proc, &addr, Duration::from_secs(5)).await;
+    (proc, addr)
+}
+
 pub fn spawn_server(
     port: u16,
     node_id: &str,
@@ -132,6 +167,13 @@ pub fn spawn_server(
         .expect("spawn server");
 
     Proc { child, log_path }
+}
+
+pub async fn start_lb(port: u16, partition_map: &str, r: usize, w: usize) -> (Proc, String) {
+    let addr = http_addr(port);
+    let mut proc = spawn_lb(port, partition_map, r, w);
+    wait_healthy(&mut proc, &addr, Duration::from_secs(5)).await;
+    (proc, addr)
 }
 
 pub fn spawn_lb(port: u16, partition_map: &str, r: usize, w: usize) -> Proc {
