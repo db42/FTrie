@@ -136,6 +136,34 @@ impl ShardStore {
         Ok(indexer.prefixMatch(tenant, &prefix))
     }
 
+    // Applies a validated write to the in-memory index.
+    //
+    // Raft prep: in a leader-based design, the leader should only call this after a log entry is
+    // committed; followers apply committed entries the same way. Durability then comes from the
+    // Raft log + snapshots, not this node-local WAL.
+    pub async fn apply_word(&self, tenant: &str, word: &str) -> Result<(), Status> {
+        if tenant.trim().is_empty() {
+            return Err(Status::invalid_argument("tenant must be non-empty"));
+        }
+        let word = normalize_and_validate_word(word)?;
+        if !self.prefix_range.contains_first_char_of(&word) {
+            return Err(Status::invalid_argument("word does not belong to this shard"));
+        }
+
+        let mut indexer = self.indexer.write().await;
+        indexer.putWord(tenant, &word);
+        Ok(())
+    }
+
+    async fn append_to_wal(&self, tenant: &str, word: &str) -> Result<(), Status> {
+        let wal: PathBuf = wal_path(&self.data_dir, tenant);
+        append_word(&wal, word, self.fsync)
+            .await
+            .map_err(|e| Status::internal(format!("wal append failed: {}", e)))?;
+        Ok(())
+    }
+
+    // Phase 3 durability: persist-before-apply using a node-local WAL.
     pub async fn put_word(&self, tenant: &str, word: &str) -> Result<(), Status> {
         if tenant.trim().is_empty() {
             return Err(Status::invalid_argument("tenant must be non-empty"));
@@ -145,13 +173,8 @@ impl ShardStore {
             return Err(Status::invalid_argument("word does not belong to this shard"));
         }
 
-        let wal: PathBuf = wal_path(&self.data_dir, tenant);
-        append_word(&wal, &word, self.fsync)
-            .await
-            .map_err(|e| Status::internal(format!("wal append failed: {}", e)))?;
-
-        let mut indexer = self.indexer.write().await;
-        indexer.putWord(tenant, &word);
+        self.append_to_wal(tenant, &word).await?;
+        self.apply_word(tenant, &word).await?;
         Ok(())
     }
 }
