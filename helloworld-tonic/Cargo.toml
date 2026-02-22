@@ -21,6 +21,10 @@ tonic-health = "0.11"
 prost = "0.12"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "fs", "io-util", "sync", "time"] }
 rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1"
+async-trait = "0.1"
+openraft = { version = "0.9", features = ["storage-v2", "serde"] }
 
 [build-dependencies]
 tonic-build = "0.11"

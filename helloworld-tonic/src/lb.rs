@@ -86,6 +86,7 @@ pub struct LoadBalancer {
     write_quorum: usize,
     read_timeout: Duration,
     write_timeout: Duration,
+    write_mode: String,
 }
 
 async fn mark_backend_result(
@@ -274,6 +275,82 @@ impl Greeter for LoadBalancer {
             .route(&word)
             .ok_or_else(|| Status::invalid_argument("word must start with a-z"))?;
 
+        if self.write_mode == "raft" {
+            // In Raft mode, the shard nodes handle replication. LB only needs to find a leader.
+            let mut candidates: Vec<String> = Vec::new();
+            for b in &partition.backends {
+                if is_backend_healthy(&self.health, b).await {
+                    candidates.push(b.clone());
+                }
+            }
+            if candidates.is_empty() {
+                candidates = partition.backends.clone();
+            }
+            candidates.shuffle(&mut rand::thread_rng());
+
+            let mut queue = candidates;
+            let mut seen = HashSet::new();
+            let mut attempts = 0usize;
+            while attempts < self.max_attempts.max(1) && !queue.is_empty() {
+                let backend = queue.remove(0);
+                if !seen.insert(backend.clone()) {
+                    continue;
+                }
+                attempts += 1;
+
+                let req = inner.clone();
+                let timeout = self.write_timeout;
+                let fut = async {
+                    let mut client = GreeterClient::connect(backend.clone())
+                        .await
+                        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+                    client.put_word(Request::new(req)).await?;
+                    Ok::<(), Status>(())
+                };
+
+                match time::timeout(timeout, fut).await {
+                    Ok(Ok(())) => {
+                        mark_backend_result(&self.health, &backend, true, self.fail_after, self.recover_after).await;
+                        return Ok(Response::new(PutWordReply {
+                            applied: true,
+                            message: "ok".to_string(),
+                        }));
+                    }
+                    Ok(Err(e)) => {
+                        // Followers return FAILED_PRECONDITION with a leader hint:
+                        // "not leader; leader=http://127.0.0.1:..."
+                        if e.code() == Code::FailedPrecondition {
+                            let msg = e.message();
+                            if let Some(idx) = msg.find("leader=") {
+                                let leader = msg[idx + "leader=".len()..].trim();
+                                if !leader.is_empty() {
+                                    queue.insert(0, leader.to_string());
+                                }
+                            }
+                            continue;
+                        }
+
+                        let ok_for_health = !status_indicates_backend_fault(e.code());
+                        mark_backend_result(
+                            &self.health,
+                            &backend,
+                            ok_for_health,
+                            self.fail_after,
+                            self.recover_after,
+                        )
+                        .await;
+                        println!("backend write failed: backend={} err={}", backend, e);
+                    }
+                    Err(_) => {
+                        mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
+                        println!("backend write timeout: backend={}", backend);
+                    }
+                }
+            }
+
+            return Err(Status::unavailable("write failed (no leader available)"));
+        }
+
         if self.write_quorum > partition.backends.len() {
             return Err(Status::invalid_argument(format!(
                 "W={} cannot be satisfied with RF={}",
@@ -431,6 +508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write_quorum,
         read_timeout: Duration::from_millis(read_timeout_ms.max(10)),
         write_timeout: Duration::from_millis(write_timeout_ms.max(10)),
+        write_mode: env_or_default("LB_WRITE_MODE", "fanout"),
     };
 
     println!("Load balancer listening on {}", addr);

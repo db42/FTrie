@@ -307,8 +307,8 @@ pub async fn put_word(addr: &str, tenant: &str, word: &str) -> Result<(), Status
 pub async fn wait_until_contains(addr: &str, tenant: &str, prefix: &str, needle: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let msg = say_hello(addr, tenant, prefix).await;
-        if msg.contains(needle) {
+        let reply = say_hello_reply(addr, tenant, prefix, 0).await;
+        if reply.matches.iter().any(|m| m == needle) {
             return;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -327,8 +327,8 @@ pub async fn assert_not_contains_for(
 ) {
     let deadline = tokio::time::Instant::now() + dur;
     loop {
-        let msg = say_hello(addr, tenant, prefix).await;
-        if msg.contains(needle) {
+        let reply = say_hello_reply(addr, tenant, prefix, 0).await;
+        if reply.matches.iter().any(|m| m == needle) {
             panic!("expected {} to not contain {}, but it did", addr, needle);
         }
         if tokio::time::Instant::now() >= deadline {

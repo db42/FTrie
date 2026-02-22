@@ -271,6 +271,13 @@ Cluster configuration:
 - Integrate `openraft` for per-shard leader election and membership changes
 - Replace LB fanout writes with leader-coordinated replication (log replication + commit index)
 - Define consistent read behavior (leader reads or follower reads with leases/read-index)
+- [Hardening] Replace string-parsed leader redirects with a structured leader discovery mechanism:
+  - Return leader hint via gRPC response metadata/trailers (e.g. `x-raft-leader`) or a dedicated `GetLeader` RPC.
+  - LB caches leader per shard with TTL and falls back to probing on errors.
+  - Keep error codes stable (`FAILED_PRECONDITION` for "not leader") without embedding parse-only semantics in message text.
+- [Cleanup] Remove `data_dir` from the Raft state machine/build path until we implement persistence:
+  - Today `data_dir` is owned/used by `ShardStore` (per-node WAL in fanout mode).
+  - When we implement persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
 
 ### Phase 5: Caching + Observability
 - Redis integration for hot prefixes
