@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io;
+use std::io::Read;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use openraft::StoredMembership;
 use openraft::Vote;
 use openraft::{BasicNode, Config, Entry, EntryPayload, TokioRuntime};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
@@ -60,27 +62,172 @@ pub struct TrieResponse {
     pub applied: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum LogRecord {
+    Entry(Entry<TrieRaftConfig>),
+    PurgeTo(LogId<u64>),
+    TruncateFrom(LogId<u64>),
+}
+
+async fn aof_append_record<T: Serialize>(path: &PathBuf, v: &T, fsync: bool) -> Result<(), io::Error> {
+    let bytes = bincode::serialize(v).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let len = bytes.len() as u32;
+
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+
+    f.write_all(&len.to_le_bytes()).await?;
+    f.write_all(&bytes).await?;
+    f.flush().await?;
+    if fsync {
+        f.sync_all().await?;
+    }
+    Ok(())
+}
+
+async fn aof_read_last_record<T: for<'de> Deserialize<'de>>(path: &PathBuf) -> Result<Option<T>, io::Error> {
+    let data = match tokio::fs::read(path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    let mut cur = std::io::Cursor::new(data);
+    let mut last: Option<T> = None;
+    loop {
+        let mut len_buf = [0u8; 4];
+        if let Err(e) = cur.read_exact(&mut len_buf) {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                break;
+            }
+            return Err(e);
+        }
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let pos = cur.position() as usize;
+        let end = pos.saturating_add(len);
+        let buf = cur.get_ref();
+        if end > buf.len() {
+            break;
+        }
+        let bytes = buf[pos..end].to_vec();
+        cur.set_position(end as u64);
+        match bincode::deserialize::<T>(&bytes) {
+            Ok(v) => last = Some(v),
+            Err(_) => break,
+        }
+    }
+    Ok(last)
+}
+
 #[derive(Clone)]
-pub struct MemLogStore {
-    inner: Arc<Mutex<MemLogInner>>,
+pub struct FileLogStore {
+    inner: Arc<Mutex<FileLogInner>>,
+    log_path: PathBuf,
+    vote_path: PathBuf,
+    committed_path: PathBuf,
+    fsync: bool,
 }
 
 #[derive(Default)]
-struct MemLogInner {
+struct FileLogInner {
     vote: Option<Vote<u64>>,
     last_purged: Option<LogId<u64>>,
+    committed: Option<LogId<u64>>,
     logs: BTreeMap<u64, Entry<TrieRaftConfig>>,
 }
 
-impl MemLogStore {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(MemLogInner::default())),
+impl FileLogStore {
+    pub async fn open(data_dir: &str, fsync: bool) -> Result<Self, io::Error> {
+        let raft_dir = PathBuf::from(data_dir).join("raft");
+        tokio::fs::create_dir_all(&raft_dir).await?;
+
+        let log_path = raft_dir.join("log.aof");
+        let vote_path = raft_dir.join("vote.aof");
+        let committed_path = raft_dir.join("committed.aof");
+
+        let vote: Option<Vote<u64>> = aof_read_last_record(&vote_path).await?;
+        let committed_raw: Option<LogId<u64>> = aof_read_last_record(&committed_path).await?;
+
+        // NOTE: We intentionally do NOT support log purging yet (no snapshots/compaction).
+        // OpenRaft may call `purge()` as an optimization; we treat it as a no-op to keep the
+        // full log available across restarts.
+        let last_purged: Option<LogId<u64>> = None;
+        let mut logs: BTreeMap<u64, Entry<TrieRaftConfig>> = BTreeMap::new();
+
+        // Replay log records to rebuild the latest view.
+        let log_bytes = match tokio::fs::read(&log_path).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+
+        let mut cur = std::io::Cursor::new(log_bytes);
+        loop {
+            let mut len_buf = [0u8; 4];
+            if let Err(e) = cur.read_exact(&mut len_buf) {
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(e);
+            }
+            let len = u32::from_le_bytes(len_buf) as usize;
+            let pos = cur.position() as usize;
+            let end = pos.saturating_add(len);
+            let buf = cur.get_ref();
+            if end > buf.len() {
+                break;
+            }
+            let bytes = buf[pos..end].to_vec();
+            cur.set_position(end as u64);
+
+            let rec: LogRecord = match bincode::deserialize(&bytes) {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+
+            match rec {
+                LogRecord::Entry(ent) => {
+                    logs.insert(ent.log_id.index, ent);
+                }
+                LogRecord::PurgeTo(_p) => {
+                    // No-op until we implement snapshots/compaction.
+                }
+                LogRecord::TruncateFrom(t) => {
+                    let start = t.index;
+                    let keys: Vec<u64> = logs.range(start..).map(|(k, _)| *k).collect();
+                    for k in keys {
+                        logs.remove(&k);
+                    }
+                }
+            }
         }
+
+        // Clamp committed to an index that actually exists in our local log.
+        // This avoids a "hole" on startup if the process was killed mid-write.
+        let committed: Option<LogId<u64>> = match committed_raw {
+            None => None,
+            Some(c) => logs.range(..=c.index).next_back().map(|(_, e)| e.log_id),
+        };
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(FileLogInner {
+                vote,
+                last_purged,
+                committed,
+                logs,
+            })),
+            log_path,
+            vote_path,
+            committed_path,
+            fsync,
+        })
     }
 }
 
-impl RaftLogReader<TrieRaftConfig> for MemLogStore {
+impl RaftLogReader<TrieRaftConfig> for FileLogStore {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + std::fmt::Debug + openraft::OptionalSend>(
         &mut self,
         range: RB,
@@ -95,8 +242,8 @@ impl RaftLogReader<TrieRaftConfig> for MemLogStore {
     }
 }
 
-impl RaftLogStorage<TrieRaftConfig> for MemLogStore {
-    type LogReader = MemLogStore;
+impl RaftLogStorage<TrieRaftConfig> for FileLogStore {
+    type LogReader = FileLogStore;
 
     async fn get_log_state(&mut self) -> Result<LogState<TrieRaftConfig>, StorageError<u64>> {
         let guard = self.inner.lock().await;
@@ -112,11 +259,15 @@ impl RaftLogStorage<TrieRaftConfig> for MemLogStore {
         })
     }
 
-    async fn get_log_reader(&mut self) -> <MemLogStore as RaftLogStorage<TrieRaftConfig>>::LogReader {
+    async fn get_log_reader(&mut self) -> <FileLogStore as RaftLogStorage<TrieRaftConfig>>::LogReader {
         self.clone()
     }
 
     async fn save_vote(&mut self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
+        aof_append_record(&self.vote_path, vote, self.fsync)
+            .await
+            .map_err(|e| StorageError::from_io_error(openraft::ErrorSubject::Vote, openraft::ErrorVerb::Write, e))?;
+
         let mut guard = self.inner.lock().await;
         guard.vote = Some(vote.clone());
         Ok(())
@@ -127,38 +278,88 @@ impl RaftLogStorage<TrieRaftConfig> for MemLogStore {
         Ok(guard.vote.clone())
     }
 
+    async fn save_committed(&mut self, committed: Option<LogId<u64>>) -> Result<(), StorageError<u64>> {
+        aof_append_record(&self.committed_path, &committed, self.fsync)
+            .await
+            .map_err(|e| {
+                StorageError::from_io_error(openraft::ErrorSubject::Logs, openraft::ErrorVerb::Write, e)
+            })?;
+        let mut guard = self.inner.lock().await;
+        guard.committed = committed;
+        Ok(())
+    }
+
+    async fn read_committed(&mut self) -> Result<Option<LogId<u64>>, StorageError<u64>> {
+        let guard = self.inner.lock().await;
+        Ok(guard.committed)
+    }
+
     async fn append<I>(&mut self, entries: I, callback: LogFlushed<TrieRaftConfig>) -> Result<(), StorageError<u64>>
     where
         I: IntoIterator<Item = Entry<TrieRaftConfig>> + openraft::OptionalSend,
         I::IntoIter: openraft::OptionalSend,
     {
-        let mut guard = self.inner.lock().await;
-        for ent in entries {
-            guard.logs.insert(ent.log_id.index, ent);
+        let mut to_persist = Vec::new();
+        let mut inserted_idx = Vec::new();
+        {
+            let mut guard = self.inner.lock().await;
+            for ent in entries {
+                inserted_idx.push(ent.log_id.index);
+                guard.logs.insert(ent.log_id.index, ent.clone());
+                to_persist.push(LogRecord::Entry(ent));
+            }
         }
-        // In-memory: treat as flushed immediately.
-        callback.log_io_completed(Ok(()));
-        Ok(())
+
+        let persist_io: Result<(), io::Error> = async {
+            for rec in &to_persist {
+                aof_append_record(&self.log_path, rec, self.fsync).await?;
+            }
+            Ok(())
+        }
+        .await;
+
+        match &persist_io {
+            Ok(()) => callback.log_io_completed(Ok(())),
+            Err(e) => callback.log_io_completed(Err(io::Error::new(e.kind(), e.to_string()))),
+        }
+
+        match persist_io {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Best-effort rollback of in-memory view when persistence fails.
+                let mut guard = self.inner.lock().await;
+                for idx in inserted_idx {
+                    guard.logs.remove(&idx);
+                }
+                Err(StorageError::from_io_error(
+                    openraft::ErrorSubject::Logs,
+                    openraft::ErrorVerb::Write,
+                    e,
+                ))
+            }
+        }
     }
 
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let mut guard = self.inner.lock().await;
-        let start = log_id.index;
-        let keys: Vec<u64> = guard.logs.range(start..).map(|(k, _)| *k).collect();
-        for k in keys {
-            guard.logs.remove(&k);
+        {
+            let mut guard = self.inner.lock().await;
+            let start = log_id.index;
+            let keys: Vec<u64> = guard.logs.range(start..).map(|(k, _)| *k).collect();
+            for k in keys {
+                guard.logs.remove(&k);
+            }
         }
+
+        aof_append_record(&self.log_path, &LogRecord::TruncateFrom(log_id), self.fsync)
+            .await
+            .map_err(|e| StorageError::from_io_error(openraft::ErrorSubject::Logs, openraft::ErrorVerb::Write, e))?;
         Ok(())
     }
 
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        let mut guard = self.inner.lock().await;
-        let end = log_id.index;
-        let keys: Vec<u64> = guard.logs.range(..=end).map(|(k, _)| *k).collect();
-        for k in keys {
-            guard.logs.remove(&k);
-        }
-        guard.last_purged = Some(log_id);
+        // No-op until we implement snapshots/compaction.
+        // If we were to persist purges, a restart would require a snapshot to rebuild state.
+        let _ = log_id;
         Ok(())
     }
 }
@@ -191,12 +392,101 @@ struct StateMachineInner {
 }
 
 impl TrieStateMachine {
-    pub fn new(store: Arc<ShardStore>, data_dir: String) -> Self {
-        Self {
-            store,
-            inner: Arc::new(Mutex::new(StateMachineInner::default())),
-            data_dir,
+    pub async fn new(
+        store: Arc<ShardStore>,
+        data_dir: String,
+        committed: Option<LogId<u64>>,
+    ) -> Result<Self, io::Error> {
+        let raft_dir = PathBuf::from(&data_dir).join("raft");
+        tokio::fs::create_dir_all(&raft_dir).await?;
+        let log_path = raft_dir.join("log.aof");
+
+        // Rebuild the in-memory trie by replaying committed entries from the Raft log.
+        //
+        // This is required because our trie is in-memory only and we haven't implemented snapshots yet.
+        // We only apply up to the last persisted committed log id.
+        let limit = committed.map(|c| c.index).unwrap_or(0);
+        let mut last_membership: StoredMembership<u64, BasicNode> = StoredMembership::default();
+
+        if limit > 0 {
+            let mut logs: BTreeMap<u64, Entry<TrieRaftConfig>> = BTreeMap::new();
+
+            let log_bytes = match tokio::fs::read(&log_path).await {
+                Ok(d) => d,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e),
+            };
+
+            let mut cur = std::io::Cursor::new(log_bytes);
+            loop {
+                let mut len_buf = [0u8; 4];
+                if let Err(e) = cur.read_exact(&mut len_buf) {
+                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                        break;
+                    }
+                    return Err(e);
+                }
+                let len = u32::from_le_bytes(len_buf) as usize;
+                let pos = cur.position() as usize;
+                let end = pos.saturating_add(len);
+                let buf = cur.get_ref();
+                if end > buf.len() {
+                    break;
+                }
+                let bytes = buf[pos..end].to_vec();
+                cur.set_position(end as u64);
+
+                let rec: LogRecord = match bincode::deserialize(&bytes) {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+
+                match rec {
+                    LogRecord::Entry(ent) => {
+                        if ent.log_id.index > limit {
+                            continue;
+                        }
+                        logs.insert(ent.log_id.index, ent);
+                    }
+                    LogRecord::PurgeTo(_p) => {
+                        // No-op until we implement snapshots/compaction.
+                    }
+                    LogRecord::TruncateFrom(t) => {
+                        let start = t.index;
+                        let keys: Vec<u64> = logs.range(start..).map(|(k, _)| *k).collect();
+                        for k in keys {
+                            logs.remove(&k);
+                        }
+                    }
+                }
+            }
+
+            for (_idx, ent) in logs.iter() {
+                match &ent.payload {
+                    EntryPayload::Blank => {}
+                    EntryPayload::Normal(cmd) => {
+                        // Ignore errors here, but surface them as IO error; without applying we can't be correct.
+                        store
+                            .apply_word(&cmd.tenant, &cmd.word)
+                            .await
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    }
+                    EntryPayload::Membership(mem) => {
+                        last_membership = StoredMembership::new(Some(ent.log_id), mem.clone());
+                    }
+                }
+            }
         }
+
+        let mut inner = StateMachineInner::default();
+        inner.last_applied = committed;
+        inner.last_membership = last_membership;
+
+        Ok(Self {
+            store,
+            inner: Arc::new(Mutex::new(inner)),
+            data_dir,
+        })
     }
 }
 
@@ -459,8 +749,10 @@ pub async fn build_raft(
     cfg.snapshot_policy = SnapshotPolicy::Never;
     let cfg = Arc::new(cfg.validate()?);
 
-    let log_store = MemLogStore::new();
-    let sm = TrieStateMachine::new(store, data_dir);
+    let raft_fsync = std::env::var("RAFT_FSYNC").ok().as_deref() == Some("1");
+    let mut log_store = FileLogStore::open(&data_dir, raft_fsync).await?;
+    let committed = log_store.read_committed().await?;
+    let sm = TrieStateMachine::new(store, data_dir, committed).await?;
     let net = GrpcRaftNetworkFactory;
 
     let raft = Raft::new(node_id, cfg, net, log_store, sm).await?;
