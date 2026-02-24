@@ -8,6 +8,8 @@ mod partition;
 mod wal;
 mod store;
 mod raft_node;
+mod raft_storage;
+mod raft_state_machine;
 mod flags;
 
 use partition::{env_or_default, PrefixRange};
