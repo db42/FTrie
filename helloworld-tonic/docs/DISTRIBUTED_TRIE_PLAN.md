@@ -288,34 +288,39 @@ Cluster configuration:
 - LB caches leader per shard with TTL and falls back to probing on errors.
 - Keep error codes stable (`FAILED_PRECONDITION` for "not leader") without embedding parse-only semantics in message text.
 
-### Phase 7: Membership Changes / Control Plane (Raft)
+### Phase 7: Storage Boundary Cleanup (Raft) (Implemented)
+- Remove `data_dir` from the Raft state machine/build path:
+- For persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
+
+### Phase 8: Snapshot Recovery + Log Compaction (Raft) (Next)
+- Replace startup "replay committed log into trie" with real snapshot recovery:
+- Implement snapshot building/installation and snapshot persistence in a Raft snapshot store.
+- Add log compaction (purge) after snapshots are in place.
+- Add restart tests that validate snapshot restore + log replay for tail entries.
+
+### Phase 9: Membership Changes / Control Plane (Raft)
 - Turn cluster membership into an explicit control-plane workflow (per shard):
 - Add/remove nodes safely (learners -> voters), with clear operational steps and guardrails.
 - Expose minimal admin API/CLI for membership changes (or scriptable control-plane entrypoints).
 
-### Phase 8: Storage Boundary Cleanup (Raft)
-- Remove `data_dir` from the Raft state machine/build path:
-- For persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
-- Prepare for snapshots + log compaction after the boundary is cleaned up.
-
-### Phase 9: Caching + Observability
+### Phase 10: Caching + Observability
 - Redis integration for hot prefixes
 - Prometheus metrics + Grafana dashboards
 - Structured logging + tracing
 
-### Phase 10: Kubernetes + Production Hardening
+### Phase 11: Kubernetes + Production Hardening
 - StatefulSet deployment with PVCs for Raft log/snapshots
 - CI/CD pipeline
 - Load testing + benchmarking and failure injection
 
-### Phase 11: Strong Reads (Raft) - Linearizable Reads via ReadIndex
+### Phase 12: Strong Reads (Raft) - Linearizable Reads via ReadIndex
 - Implement `READ_CONSISTENCY=linearizable`:
 - Route reads to leader and use OpenRaft linearizable read barrier (ReadIndex / `ensure_linearizable()`).
 - Decide whether to support follower reads with read-index/leases after the leader-only variant is stable.
 - Add tests that demonstrate linearizability vs eventual reads under leader change and follower lag.
 - Add `READ_CONSISTENCY=eventual|linearizable` config knob (default `eventual`) and document HA vs strong tradeoffs.
 
-### Phase 12: Documentation + Blog
+### Phase 13: Documentation + Blog
 - Architecture documentation and operational runbooks
 - "Building a Distributed Prefix Search" blog series
 
