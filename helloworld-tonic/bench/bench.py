@@ -35,6 +35,30 @@ def _git(cmd: List[str]) -> str:
     except Exception:
         return "unknown"
 
+def _normalize_error(e: Exception) -> str:
+    # grpc.aio.AioRpcError has .code() and .details(). Prefer stable strings (avoid timestamps).
+    code = getattr(e, "code", None)
+    details = getattr(e, "details", None)
+    try:
+        if callable(code) and callable(details):
+            c = code()
+            d = details()
+            c_name = getattr(c, "name", None)
+            c_str = c_name if isinstance(c_name, str) else str(c)
+            return f"{c_str}: {d}"
+    except Exception:
+        pass
+    msg = str(e).strip()
+    if msg:
+        return msg[:300]
+    return e.__class__.__name__
+
+def _top_n_counts(d: Dict[str, int], n: int) -> Dict[str, int]:
+    if len(d) <= n:
+        return d
+    items = sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:n]
+    return dict(items)
+
 def _pick_unused_port() -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -199,7 +223,8 @@ def _load_queries(path: Path) -> List[Dict[str, Any]]:
 
 @dataclass
 class RunStats:
-    requests: int
+    requests_total: int
+    requests_ok: int
     errors: int
     elapsed_s: float
     avg_ms: float
@@ -207,6 +232,7 @@ class RunStats:
     p95_ms: float
     p99_ms: float
     max_ms: float
+    error_counts: Dict[str, int]
 
 
 async def run_workload(
@@ -237,19 +263,21 @@ async def run_workload(
     warmup_deadline = time.monotonic() + warmup_s
     end_deadline = warmup_deadline + duration_s
 
-    async def worker() -> Tuple[int, int, float, float, HdrHistogram]:
+    async def worker() -> Tuple[int, int, int, float, float, HdrHistogram, Dict[str, int]]:
         channel = grpc.aio.insecure_channel(endpoint)
         stub = helloworld_pb2_grpc.GreeterStub(channel)
         hist = HdrHistogram(1, 60_000_000, 3)  # 1us..60s in us
-        requests = 0
+        requests_total = 0
+        requests_ok = 0
         errors = 0
         sum_ms = 0.0
         max_ms = 0.0
+        err_counts: Dict[str, int] = {}
         while True:
             now = time.monotonic()
             if now >= end_deadline:
                 await channel.close()
-                return (requests, errors, sum_ms, max_ms, hist)
+                return (requests_total, requests_ok, errors, sum_ms, max_ms, hist, err_counts)
             q = await next_query()
             req = helloworld_pb2.HelloRequest(
                 name=q["prefix"],
@@ -265,7 +293,9 @@ async def run_workload(
                     if tk > 0 and len(resp.matches) > tk:
                         raise RuntimeError(f"server returned {len(resp.matches)} > top_k={tk}")
                 ok = True
-            except Exception:
+            except Exception as e:
+                msg = _normalize_error(e)
+                err_counts[msg] = err_counts.get(msg, 0) + 1
                 ok = False
 
             t1 = time.perf_counter_ns()
@@ -274,36 +304,44 @@ async def run_workload(
             # Warmup: ignore stats but keep pressure on the server.
             if time.monotonic() < warmup_deadline:
                 continue
-            requests += 1
+
+            requests_total += 1
             if not ok:
                 errors += 1
                 continue
+            requests_ok += 1
             sum_ms += dur_ms
             if dur_ms > max_ms:
                 max_ms = dur_ms
             hist.record_value(int(dur_ms * 1000.0))  # us
 
     parts = await asyncio.gather(*[asyncio.create_task(worker()) for _ in range(concurrency)])
-    requests = sum(p[0] for p in parts)
-    errors = sum(p[1] for p in parts)
-    sum_ms = sum(p[2] for p in parts)
-    max_ms = max((p[3] for p in parts), default=0.0)
+    requests_total = sum(p[0] for p in parts)
+    requests_ok = sum(p[1] for p in parts)
+    errors = sum(p[2] for p in parts)
+    sum_ms = sum(p[3] for p in parts)
+    max_ms = max((p[4] for p in parts), default=0.0)
     hist = HdrHistogram(1, 60_000_000, 3)
+    error_counts: Dict[str, int] = {}
     for p in parts:
         if hasattr(hist, "add"):
-            hist.add(p[4])
+            hist.add(p[5])
         else:
-            hist = p[4]
+            hist = p[5]
             break
+        for k, v in p[6].items():
+            error_counts[k] = error_counts.get(k, 0) + v
+    error_counts = _top_n_counts(error_counts, 20)
 
     elapsed_s = duration_s
-    avg_ms = (sum_ms / requests) if requests else 0.0
-    p50_ms = hist.get_value_at_percentile(50.0) / 1000.0 if requests else 0.0
-    p95_ms = hist.get_value_at_percentile(95.0) / 1000.0 if requests else 0.0
-    p99_ms = hist.get_value_at_percentile(99.0) / 1000.0 if requests else 0.0
+    avg_ms = (sum_ms / requests_ok) if requests_ok else 0.0
+    p50_ms = hist.get_value_at_percentile(50.0) / 1000.0 if requests_ok else 0.0
+    p95_ms = hist.get_value_at_percentile(95.0) / 1000.0 if requests_ok else 0.0
+    p99_ms = hist.get_value_at_percentile(99.0) / 1000.0 if requests_ok else 0.0
 
     return RunStats(
-        requests=requests,
+        requests_total=requests_total,
+        requests_ok=requests_ok,
         errors=errors,
         elapsed_s=elapsed_s,
         avg_ms=avg_ms,
@@ -311,12 +349,51 @@ async def run_workload(
         p95_ms=p95_ms,
         p99_ms=p99_ms,
         max_ms=max_ms,
+        error_counts=error_counts,
     )
 
 
 def _workload_key(path: Path) -> str:
     # hot_len3_k10.jsonl -> hot_len3_k10
     return path.stem
+
+def _describe_workload(path: Path) -> Dict[str, Any]:
+    stem = path.stem
+    # Expected: <kind>_len<LEN>_k<K>
+    kind = ""
+    prefix_len = None
+    top_k = None
+    parts = stem.split("_")
+    if len(parts) >= 3:
+        kind = parts[0]
+        if parts[1].startswith("len"):
+            try:
+                prefix_len = int(parts[1][3:])
+            except Exception:
+                prefix_len = None
+        if parts[2].startswith("k"):
+            try:
+                top_k = int(parts[2][1:])
+            except Exception:
+                top_k = None
+
+    desc_bits: List[str] = []
+    if kind:
+        desc_bits.append(kind)
+    if prefix_len is not None:
+        desc_bits.append(f"prefix_len={prefix_len}")
+    if top_k is not None:
+        desc_bits.append(f"top_k={top_k}")
+    desc = " ".join(desc_bits) if desc_bits else stem
+
+    return {
+        "workload_key": stem,
+        "workload_file": path.name,
+        "workload_desc": desc,
+        "kind": kind or None,
+        "prefix_len": prefix_len,
+        "top_k": top_k,
+    }
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -377,7 +454,8 @@ def cmd_compare(args: argparse.Namespace) -> None:
                 delta = f"{pct:+.1f}%"
             print(f"{label:20s} {va:12.3f} {vb:12.3f} {delta:>12s}")
 
-        row("QPS", "qps", invert=False)
+        qps_field = "qps_ok" if ("qps_ok" in ra and "qps_ok" in rb) else "qps"
+        row("QPS", qps_field, invert=False)
         row("Avg Lat (ms)", "latency_avg_ms", invert=True)
         row("P95 Lat (ms)", "latency_p95_ms", invert=True)
         row("P99 Lat (ms)", "latency_p99_ms", invert=True)
@@ -406,6 +484,11 @@ def cmd_run(args: argparse.Namespace) -> None:
             "concurrency": args.concurrency,
             "warmup_s": args.warmup_s,
             "duration_s": args.duration_s,
+            "deployment": {
+                "type": args.deployment,
+                "nodes": args.nodes,
+                "notes": args.deployment_notes,
+            },
         },
         "workloads": {},
     }
@@ -421,20 +504,30 @@ def cmd_run(args: argparse.Namespace) -> None:
                 duration_s=args.duration_s,
                 validate=args.validate,
             )
-            qps = (st.requests / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            qps_total = (st.requests_total / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            qps_ok = (st.requests_ok / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            wdesc = _describe_workload(wp)
             results["workloads"][key] = {
-                "qps": qps,
-                "requests": st.requests,
+                "qps_total": qps_total,
+                "qps_ok": qps_ok,
+                "requests_total": st.requests_total,
+                "requests_ok": st.requests_ok,
                 "errors": st.errors,
                 "latency_avg_ms": st.avg_ms,
                 "latency_p50_ms": st.p50_ms,
                 "latency_p95_ms": st.p95_ms,
                 "latency_p99_ms": st.p99_ms,
                 "latency_max_ms": st.max_ms,
+                "error_counts": st.error_counts,
                 "workload_sha256": _sha256_file(wp),
+                "workload_file": wdesc["workload_file"],
+                "workload_desc": wdesc["workload_desc"],
+                "kind": wdesc["kind"],
+                "prefix_len": wdesc["prefix_len"],
+                "top_k": wdesc["top_k"],
             }
             print(
-                f"{key}: qps={qps:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
+                f"{key}: qps_ok={qps_ok:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
             )
 
     asyncio.run(run_all())
@@ -468,6 +561,11 @@ def cmd_matrix(args: argparse.Namespace) -> None:
             "duration_s": args.duration_s,
             "concurrencies": concurrencies,
             "validate": args.validate,
+            "deployment": {
+                "type": args.deployment,
+                "nodes": args.nodes,
+                "notes": args.deployment_notes,
+            },
         },
         "workloads": {},
     }
@@ -483,22 +581,31 @@ def cmd_matrix(args: argparse.Namespace) -> None:
                 duration_s=args.duration_s,
                 validate=args.validate,
             )
-            qps = (st.requests / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            qps_total = (st.requests_total / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            qps_ok = (st.requests_ok / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+            wdesc = _describe_workload(wp)
             results["workloads"][key] = {
-                "qps": qps,
-                "requests": st.requests,
+                "qps_total": qps_total,
+                "qps_ok": qps_ok,
+                "requests_total": st.requests_total,
+                "requests_ok": st.requests_ok,
                 "errors": st.errors,
                 "latency_avg_ms": st.avg_ms,
                 "latency_p50_ms": st.p50_ms,
                 "latency_p95_ms": st.p95_ms,
                 "latency_p99_ms": st.p99_ms,
                 "latency_max_ms": st.max_ms,
+                "error_counts": st.error_counts,
                 "workload_sha256": _sha256_file(wp),
-                "workload_file": wp.name,
+                "workload_file": wdesc["workload_file"],
+                "workload_desc": wdesc["workload_desc"],
+                "kind": wdesc["kind"],
+                "prefix_len": wdesc["prefix_len"],
+                "top_k": wdesc["top_k"],
                 "concurrency": c,
             }
             print(
-                f"{key}: qps={qps:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
+                f"{key}: qps_ok={qps_ok:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
             )
 
     for c in concurrencies:
@@ -564,6 +671,13 @@ def cmd_suite(args: argparse.Namespace) -> None:
                 "concurrencies": concurrencies,
                 "validate": args.validate,
                 "disable_static_index": bool(args.disable_static_index),
+                "deployment": {
+                    "type": args.deployment or "local_single_node",
+                    "nodes": 1,
+                    "notes": args.deployment_notes,
+                    "server_bin": str(server_bin),
+                    "data_dir": data_dir,
+                },
             },
             "workloads": {},
         }
@@ -579,22 +693,27 @@ def cmd_suite(args: argparse.Namespace) -> None:
                     duration_s=args.duration_s,
                     validate=args.validate,
                 )
-                qps = (st.requests / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+                qps_total = (st.requests_total / st.elapsed_s) if st.elapsed_s > 0 else 0.0
+                qps_ok = (st.requests_ok / st.elapsed_s) if st.elapsed_s > 0 else 0.0
                 results["workloads"][key] = {
-                    "qps": qps,
-                    "requests": st.requests,
+                    "qps_total": qps_total,
+                    "qps_ok": qps_ok,
+                    "requests_total": st.requests_total,
+                    "requests_ok": st.requests_ok,
                     "errors": st.errors,
                     "latency_avg_ms": st.avg_ms,
                     "latency_p50_ms": st.p50_ms,
                     "latency_p95_ms": st.p95_ms,
                     "latency_p99_ms": st.p99_ms,
                     "latency_max_ms": st.max_ms,
+                    "error_counts": st.error_counts,
                     "workload_sha256": _sha256_file(wp),
                     "workload_file": wp.name,
+                    "workload_desc": _describe_workload(wp)["workload_desc"],
                     "concurrency": c,
                 }
                 print(
-                    f"{key}: qps={qps:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
+                    f"{key}: qps_ok={qps_ok:.1f} p50={st.p50_ms:.3f}ms p95={st.p95_ms:.3f}ms p99={st.p99_ms:.3f}ms errors={st.errors}"
                 )
 
         for c in concurrencies:
@@ -633,6 +752,9 @@ def main() -> None:
     r.add_argument("--duration-s", type=float, default=60.0)
     r.add_argument("--out-dir", default=str(Path(__file__).resolve().parent / "results"))
     r.add_argument("--output", default="")
+    r.add_argument("--deployment", default="", help="e.g. single_node, three_nodes, k8s")
+    r.add_argument("--nodes", type=int, default=0, help="number of nodes in deployment (if known)")
+    r.add_argument("--deployment-notes", default="", help="free-form notes (instance type, flags, etc.)")
     r.add_argument("--validate", action="store_true", help="validate replies (slower)")
     r.add_argument("workloads", nargs="+")
     r.set_defaults(func=cmd_run)
@@ -644,6 +766,9 @@ def main() -> None:
     m.add_argument("--duration-s", type=float, default=60.0)
     m.add_argument("--out-dir", default=str(Path(__file__).resolve().parent / "results"))
     m.add_argument("--output", default="")
+    m.add_argument("--deployment", default="", help="e.g. single_node, three_nodes, k8s")
+    m.add_argument("--nodes", type=int, default=0, help="number of nodes in deployment (if known)")
+    m.add_argument("--deployment-notes", default="", help="free-form notes (instance type, flags, etc.)")
     m.add_argument("--validate", action="store_true")
     m.add_argument("workloads", nargs="+")
     m.set_defaults(func=cmd_matrix)
@@ -652,6 +777,8 @@ def main() -> None:
     s.add_argument("--skip-build", action="store_true")
     s.add_argument("--server-bin", default="", help="path to helloworld-server (skips build)")
     s.add_argument("--disable-static-index", action="store_true")
+    s.add_argument("--deployment", default="", help="override deployment type string")
+    s.add_argument("--deployment-notes", default="", help="free-form notes (instance type, flags, etc.)")
     s.add_argument("--workload-dir", default=str(Path(__file__).resolve().parent / "workloads"))
     s.add_argument("--only", action="append", default=[], help="workload file name or stem")
     s.add_argument("--concurrency", default="1,8,32,128")

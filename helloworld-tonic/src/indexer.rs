@@ -109,10 +109,8 @@ impl Indexer {
 
         if let Some(trie) = self.tenantTrieMap.get(tenantID) {
             // Access the node data here
-            println!("Found node for key {}!", tenantID);
             return trie::prefixMatch(&trie, word);
         } else {
-            println!("No node found for key {}", tenantID);
             return [].to_vec();
         }
     }

@@ -62,6 +62,8 @@ pub mod raft_proto {
 pub struct MyGreeter {
     node_id: String,
     include_node_id_in_reply: bool,
+    include_message_in_reply: bool,
+    default_top_k: u32,
     store: Arc<ShardStore>,
     raft: openraft::Raft<raft_node::TrieRaftConfig>,
     raft_bootstrapped: Arc<std::sync::atomic::AtomicBool>,
@@ -74,14 +76,13 @@ impl Greeter for MyGreeter {
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloReply>, Status> {
-        println!("Got a request: {:?}", request);
         let inner = request.into_inner();
         let prefix = inner.name.trim().to_ascii_lowercase();
         let tenant = inner.tenant;
         // `top_k` is proto3 scalar, so if the client omits it we see `0`.
         // Keep backward-compatible behavior: default is unlimited unless DEFAULT_TOP_K is set.
         let effective_top_k = if inner.top_k == 0 {
-            env_or_default("DEFAULT_TOP_K", "10").parse::<u32>().unwrap_or(0)
+            self.default_top_k
         } else {
             inner.top_k
         };
@@ -95,8 +96,8 @@ impl Greeter for MyGreeter {
         } else {
             "".to_string()
         };
-        let reply = HelloReply {
-            message: format!(
+        let message = if self.include_message_in_reply {
+            format!(
                 "Hello {}{} matches={} top_k={}",
                 prefix,
                 node_suffix,
@@ -106,7 +107,12 @@ impl Greeter for MyGreeter {
                 } else {
                     effective_top_k as i32
                 }
-            ),
+            )
+        } else {
+            "".to_string()
+        };
+        let reply = HelloReply {
+            message,
             matches,
             node_id: if self.include_node_id_in_reply {
                 self.node_id.clone()
@@ -173,6 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PrefixRange::parse(&prefix_range).unwrap_or_else(|e| panic!("invalid PREFIX_RANGE: {}", e));
     let node_id = env_or_default("NODE_ID", "node");
     let include_node_id_in_reply = env_or_default("INCLUDE_NODE_ID_IN_REPLY", "0") == "1";
+    let include_message_in_reply = env_or_default("INCLUDE_MESSAGE", "1") == "1";
+    let default_top_k = env_or_default("DEFAULT_TOP_K", "0").parse::<u32>().unwrap_or(0);
     let data_dir = env_or_default("DATA_DIR", "./data");
     let raft_enabled = flags::is_raft_enabled();
     if !raft_enabled {
@@ -207,18 +215,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let greeter = MyGreeter {
         node_id: node_id.clone(),
         include_node_id_in_reply,
+        include_message_in_reply,
+        default_top_k,
         store: store.clone(),
         raft: raft.clone(),
         raft_bootstrapped: raft_bootstrapped.clone(),
     };
 
     println!(
-        "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={}",
+        "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={} INCLUDE_MESSAGE={} DEFAULT_TOP_K={}",
         node_id,
         bind_addr,
         greeter.store.prefix_range().start,
         greeter.store.prefix_range().end,
-        data_dir
+        data_dir,
+        if include_message_in_reply { 1 } else { 0 },
+        default_top_k
     );
 
     let (mut reporter, health_service) = health_reporter();

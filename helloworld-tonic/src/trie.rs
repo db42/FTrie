@@ -115,11 +115,9 @@ fn findWord(trie: &Node, word: &str) -> bool {
             node = child_node;
             continue;
         } else {
-            println!("word not found {}", word);
             return false;
         }
     }
-    println!("word found {}", word);
     return true;
 }
 
@@ -136,7 +134,6 @@ pub fn prefixMatchTopK(trie: &Node, prefix: &str, top_k: usize) -> Vec<String> {
             node = child_node;
             continue;
         } else {
-            println!("prefix not found {}", prefix);
             // return matches;
             return Vec::new();
         }
