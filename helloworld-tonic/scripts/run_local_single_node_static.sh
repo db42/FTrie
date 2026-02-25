@@ -18,6 +18,7 @@ set -euo pipefail
 # - RAFT_ENABLED (default 1; this server binary expects raft mode currently)
 # - INCLUDE_MESSAGE (default 1; set 0 to skip formatting HelloReply.message)
 # - DEFAULT_TOP_K (default 0; used when client omits top_k)
+# - INDEX_BACKEND (default trie; set fst to use the Tier-4 FST index)
 # - SKIP_BUILD (default 0)
 # - TOP_K (optional; shown in grpcurl examples)
 
@@ -36,6 +37,7 @@ DISABLE_STATIC_INDEX="${DISABLE_STATIC_INDEX:-0}"
 RAFT_ENABLED="${RAFT_ENABLED:-1}"
 INCLUDE_MESSAGE="${INCLUDE_MESSAGE:-1}"
 DEFAULT_TOP_K="${DEFAULT_TOP_K:-0}"
+INDEX_BACKEND="${INDEX_BACKEND:-trie}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 TOP_K="${TOP_K:-}"
 
@@ -87,6 +89,7 @@ echo "Starting single node on :${PORT} (PREFIX_RANGE=${PREFIX_RANGE})..."
   export RAFT_MEMBERS="${RAFT_MEMBERS:-1=http://127.0.0.1:${PORT}}"
   export INCLUDE_MESSAGE="${INCLUDE_MESSAGE}"
   export DEFAULT_TOP_K="${DEFAULT_TOP_K}"
+  export INDEX_BACKEND="${INDEX_BACKEND}"
 
   ./target/debug/helloworld-server
 ) &

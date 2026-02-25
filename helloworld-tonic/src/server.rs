@@ -4,6 +4,7 @@ use hello_world::greeter_server::{Greeter, GreeterServer};
 use hello_world::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 
 mod indexer;
+mod fst_index;
 mod partition;
 mod store;
 mod raft_node;
@@ -223,12 +224,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={} INCLUDE_MESSAGE={} DEFAULT_TOP_K={}",
+        "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={} INDEX_BACKEND={} INCLUDE_MESSAGE={} DEFAULT_TOP_K={}",
         node_id,
         bind_addr,
         greeter.store.prefix_range().start,
         greeter.store.prefix_range().end,
         data_dir,
+        greeter.store.backend_name(),
         if include_message_in_reply { 1 } else { 0 },
         default_top_k
     );

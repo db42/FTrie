@@ -25,6 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 bincode = "1"
 async-trait = "0.1"
 openraft = { version = "0.9", features = ["storage-v2", "serde"] }
+fst = "0.4"
 
 [build-dependencies]
 tonic-build = "0.11"
