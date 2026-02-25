@@ -317,14 +317,14 @@ impl Greeter for LoadBalancer {
                         }));
                     }
                     Ok(Err(e)) => {
-                        // Followers return FAILED_PRECONDITION with a leader hint:
-                        // "not leader; leader=http://127.0.0.1:..."
+                        // Followers return FAILED_PRECONDITION with a leader hint via metadata `x-raft-leader`.
                         if e.code() == Code::FailedPrecondition {
-                            let msg = e.message();
-                            if let Some(idx) = msg.find("leader=") {
-                                let leader = msg[idx + "leader=".len()..].trim();
-                                if !leader.is_empty() {
-                                    queue.insert(0, leader.to_string());
+                            if let Some(v) = e.metadata().get("x-raft-leader") {
+                                if let Ok(leader) = v.to_str() {
+                                    let leader = leader.trim();
+                                    if !leader.is_empty() {
+                                        queue.insert(0, leader.to_string());
+                                    }
                                 }
                             }
                             continue;

@@ -267,29 +267,58 @@ Cluster configuration:
 - Read model: require `R` successful replica responses
 - Persist writes per replica via WAL and replay on restart (`DATA_DIR/*.wal`, `FSYNC` optional)
 
-### Phase 4: Consensus (Raft) + Leader-Based Replication (Next)
+### Phase 4: Consensus (Raft) + Leader-Based Replication (Implemented MVP)
 - Integrate `openraft` for per-shard leader election and membership changes
 - Replace LB fanout writes with leader-coordinated replication (log replication + commit index)
-- Define consistent read behavior (leader reads or follower reads with leases/read-index)
-- [Hardening] Replace string-parsed leader redirects with a structured leader discovery mechanism:
-  - Return leader hint via gRPC response metadata/trailers (e.g. `x-raft-leader`) or a dedicated `GetLeader` RPC.
-  - LB caches leader per shard with TTL and falls back to probing on errors.
-  - Keep error codes stable (`FAILED_PRECONDITION` for "not leader") without embedding parse-only semantics in message text.
-- [Cleanup] Remove `data_dir` from the Raft state machine/build path until we implement persistence:
-  - Today `data_dir` is owned/used by `ShardStore` (per-node WAL in fanout mode).
-  - When we implement persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
 
-### Phase 5: Caching + Observability
+### Phase 5: Read Semantics (Raft) - HA / Eventual Reads First
+- Document Raft-mode read semantics as HA/eventual by default.
+- **Contract (Raft mode, current behavior)**:
+- `SayHello` is served from a node's local in-memory trie without a Raft read barrier.
+- LB may route reads to any healthy replica (random + retries). If `R>1`, LB requires `R` successful responses
+  but does not reconcile/verify payload equality across replicas.
+- **Implication**: reads can be stale if a follower is behind (or immediately after leader change).
+- **Why**: prioritizes availability and simplicity while we harden leader discovery and membership changes.
+- **Non-goals in this phase**:
+- No linearizable reads (ReadIndex / `ensure_linearizable()`).
+- No digest comparison, version reconciliation, or read-repair (Cassandra-style).
+- Linearizable reads + an explicit `READ_CONSISTENCY` knob are deferred to Phase 11.
+
+### Phase 6: Leader Discovery Hardening (Raft)
+- Replace string-parsed leader redirects with a structured leader discovery mechanism:
+- Return leader hint via gRPC response metadata/trailers (e.g. `x-raft-leader`) or a dedicated `GetLeader` RPC.
+- LB caches leader per shard with TTL and falls back to probing on errors.
+- Keep error codes stable (`FAILED_PRECONDITION` for "not leader") without embedding parse-only semantics in message text.
+
+### Phase 7: Membership Changes / Control Plane (Raft)
+- Turn cluster membership into an explicit control-plane workflow (per shard):
+- Add/remove nodes safely (learners -> voters), with clear operational steps and guardrails.
+- Expose minimal admin API/CLI for membership changes (or scriptable control-plane entrypoints).
+
+### Phase 8: Storage Boundary Cleanup (Raft)
+- Remove `data_dir` from the Raft state machine/build path:
+- Today `data_dir` is owned/used by `ShardStore` (per-node WAL in fanout mode).
+- For persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
+- Prepare for snapshots + log compaction after the boundary is cleaned up.
+
+### Phase 9: Caching + Observability
 - Redis integration for hot prefixes
 - Prometheus metrics + Grafana dashboards
 - Structured logging + tracing
 
-### Phase 6: Kubernetes + Production Hardening
+### Phase 10: Kubernetes + Production Hardening
 - StatefulSet deployment with PVCs for WAL/snapshots
 - CI/CD pipeline
 - Load testing + benchmarking and failure injection
 
-### Phase 7: Documentation + Blog
+### Phase 11: Strong Reads (Raft) - Linearizable Reads via ReadIndex
+- Implement `READ_CONSISTENCY=linearizable`:
+- Route reads to leader and use OpenRaft linearizable read barrier (ReadIndex / `ensure_linearizable()`).
+- Decide whether to support follower reads with read-index/leases after the leader-only variant is stable.
+- Add tests that demonstrate linearizability vs eventual reads under leader change and follower lag.
+- Add `READ_CONSISTENCY=eventual|linearizable` config knob (default `eventual`) and document HA vs strong tradeoffs.
+
+### Phase 12: Documentation + Blog
 - Architecture documentation and operational runbooks
 - "Building a Distributed Prefix Search" blog series
 

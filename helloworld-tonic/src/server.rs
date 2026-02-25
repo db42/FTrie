@@ -144,10 +144,21 @@ impl Greeter for MyGreeter {
                         e
                     {
                         let leader = f.leader_node.map(|n| n.addr).unwrap_or_default();
-                        return Err(Status::failed_precondition(format!(
-                            "not leader; leader={}",
-                            leader
-                        )));
+                        // Return a structured leader hint for the LB in metadata.
+                        //
+                        // Note: in gRPC, "headers" vs "trailers" is transport-specific. Tonic surfaces this
+                        // as `Status::metadata()` on the client side.
+                        let mut md = tonic::metadata::MetadataMap::new();
+                        if !leader.is_empty() {
+                            if let Ok(v) = tonic::metadata::MetadataValue::try_from(leader.clone()) {
+                                md.insert("x-raft-leader", v);
+                            }
+                        }
+                        return Err(Status::with_metadata(
+                            tonic::Code::FailedPrecondition,
+                            "not leader",
+                            md,
+                        ));
                     }
                     return Err(Status::unavailable(format!("raft write failed: {}", e)));
                 }
