@@ -51,7 +51,6 @@ async fn raft_putword_replicates_across_replicas() {
         "j-r",
         n1_dir.to_str().unwrap(),
         false,
-        false,
         &env1,
     );
     let mut n2 = spawn_server_with_env(
@@ -59,7 +58,6 @@ async fn raft_putword_replicates_across_replicas() {
         "n2",
         "j-r",
         n2_dir.to_str().unwrap(),
-        false,
         false,
         &env2,
     );
@@ -69,7 +67,6 @@ async fn raft_putword_replicates_across_replicas() {
         "j-r",
         n3_dir.to_str().unwrap(),
         false,
-        false,
         &env3,
     );
     wait_healthy(&mut n1, &a1, Duration::from_secs(5)).await;
@@ -77,8 +74,7 @@ async fn raft_putword_replicates_across_replicas() {
     wait_healthy(&mut n3, &a3, Duration::from_secs(5)).await;
 
     let partition_map = format!("j-r={}|{}|{}", a1, a2, a3);
-    let lb_env = vec![("LB_WRITE_MODE".to_string(), "raft".to_string())];
-    let mut lb = spawn_lb_with_env(plb, &partition_map, 1, 1, &lb_env);
+    let mut lb = spawn_lb(plb, &partition_map, 1);
     let lb_addr = http_addr(plb);
     wait_healthy(&mut lb, &lb_addr, Duration::from_secs(5)).await;
 

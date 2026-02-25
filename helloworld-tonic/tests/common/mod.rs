@@ -121,7 +121,6 @@ pub async fn start_server(
     prefix_range: &str,
     data_dir: &str,
     include_node_id_in_reply: bool,
-    fsync: bool,
 ) -> (Proc, String) {
     let addr = http_addr(port);
     let mut proc = spawn_server(
@@ -130,7 +129,6 @@ pub async fn start_server(
         prefix_range,
         data_dir,
         include_node_id_in_reply,
-        fsync,
     );
     wait_healthy(&mut proc, &addr, Duration::from_secs(5)).await;
     (proc, addr)
@@ -142,7 +140,6 @@ pub fn spawn_server(
     prefix_range: &str,
     data_dir: &str,
     include_node_id_in_reply: bool,
-    fsync: bool,
 ) -> Proc {
     spawn_server_with_env(
         port,
@@ -150,7 +147,6 @@ pub fn spawn_server(
         prefix_range,
         data_dir,
         include_node_id_in_reply,
-        fsync,
         &[],
     )
 }
@@ -161,10 +157,10 @@ pub fn spawn_server_with_env(
     prefix_range: &str,
     data_dir: &str,
     include_node_id_in_reply: bool,
-    fsync: bool,
     extra_env: &[(String, String)],
 ) -> Proc {
     let addr = format!("127.0.0.1:{}", port);
+    let http = http_addr(port);
     let log_path =
         std::env::temp_dir().join(format!("helloworld-server-{}-{}.log", node_id, port));
     let log = std::fs::File::create(&log_path).expect("create server log");
@@ -175,11 +171,15 @@ pub fn spawn_server_with_env(
         .env("NODE_ID", node_id)
         .env("PREFIX_RANGE", prefix_range)
         .env("DATA_DIR", data_dir)
-        .env("FSYNC", if fsync { "1" } else { "0" })
         .env(
             "INCLUDE_NODE_ID_IN_REPLY",
             if include_node_id_in_reply { "1" } else { "0" },
         )
+        // Raft-only mode: default to a single-node Raft cluster unless overridden.
+        .env("RAFT_ENABLED", "1")
+        .env("RAFT_NODE_ID", "1")
+        .env("RAFT_BOOTSTRAP", "1")
+        .env("RAFT_MEMBERS", format!("1={}", http))
         .env("DISABLE_STATIC_INDEX", "1")
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
@@ -194,22 +194,21 @@ pub fn spawn_server_with_env(
     Proc { child, log_path }
 }
 
-pub async fn start_lb(port: u16, partition_map: &str, r: usize, w: usize) -> (Proc, String) {
+pub async fn start_lb(port: u16, partition_map: &str, r: usize) -> (Proc, String) {
     let addr = http_addr(port);
-    let mut proc = spawn_lb(port, partition_map, r, w);
+    let mut proc = spawn_lb(port, partition_map, r);
     wait_healthy(&mut proc, &addr, Duration::from_secs(5)).await;
     (proc, addr)
 }
 
-pub fn spawn_lb(port: u16, partition_map: &str, r: usize, w: usize) -> Proc {
-    spawn_lb_with_env(port, partition_map, r, w, &[])
+pub fn spawn_lb(port: u16, partition_map: &str, r: usize) -> Proc {
+    spawn_lb_with_env(port, partition_map, r, &[])
 }
 
 pub fn spawn_lb_with_env(
     port: u16,
     partition_map: &str,
     r: usize,
-    w: usize,
     extra_env: &[(String, String)],
 ) -> Proc {
     let addr = format!("127.0.0.1:{}", port);
@@ -228,7 +227,6 @@ pub fn spawn_lb_with_env(
         .env("READ_TIMEOUT_MS", "500")
         .env("WRITE_TIMEOUT_MS", "500")
         .env("R", r.to_string())
-        .env("W", w.to_string())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
 

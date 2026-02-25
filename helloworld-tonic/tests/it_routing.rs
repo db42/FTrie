@@ -27,7 +27,6 @@ async fn putword_routes_to_correct_shard() {
         "a-i",
         ai_dir.to_str().unwrap(),
         false,
-        false,
     )
     .await;
     let (_tz, tz_addr) = start_server(
@@ -36,12 +35,11 @@ async fn putword_routes_to_correct_shard() {
         "t-z",
         tz_dir.to_str().unwrap(),
         false,
-        false,
     )
     .await;
 
     let partition_map = format!("a-i={},t-z={}", ai_addr, tz_addr);
-    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1, 1).await;
+    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1).await;
 
     put_word(&lb_addr, "power", "apricot").await.unwrap();
     wait_until_contains(&ai_addr, "power", "apr", "apricot").await;
@@ -88,7 +86,6 @@ async fn ha_read_succeeds_when_one_replica_down_with_r1() {
         "j-r",
         jr1_dir.to_str().unwrap(),
         true,
-        false,
     )
     .await;
     let mut jr1 = Some(jr1_proc);
@@ -98,12 +95,11 @@ async fn ha_read_succeeds_when_one_replica_down_with_r1() {
         "j-r",
         jr2_dir.to_str().unwrap(),
         true,
-        false,
     )
     .await;
 
     let partition_map = format!("j-r={}|{}", jr1_addr, jr2_addr);
-    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1, 2).await;
+    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1).await;
 
     put_word(&lb_addr, "power", "jokerz").await.unwrap();
     wait_until_contains(&jr1_addr, "power", "joker", "jokerz").await;
@@ -147,12 +143,11 @@ async fn lb_rejects_invalid_prefix() {
         "j-r",
         jr1_dir.to_str().unwrap(),
         false,
-        false,
     )
     .await;
 
     let partition_map = format!("j-r={}", jr1_addr);
-    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1, 1).await;
+    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1).await;
 
     let err = say_hello_result(&lb_addr, "power", "jo2").await.unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,8 +15,11 @@ use openraft::raft::InstallSnapshotResponse;
 use openraft::raft::VoteRequest;
 use openraft::raft::VoteResponse;
 use openraft::storage::RaftLogStorage;
+use openraft::RaftLogReader;
 use openraft::Raft;
-use openraft::{BasicNode, Config, Entry, TokioRuntime};
+use openraft::error::InitializeError;
+use openraft::StoredMembership;
+use openraft::{BasicNode, Config, Entry, EntryPayload, TokioRuntime};
 use serde::{Deserialize, Serialize};
 use tonic::{Request, Response, Status};
 
@@ -215,7 +219,32 @@ pub async fn build_raft(
     let raft_fsync = std::env::var("RAFT_FSYNC").ok().as_deref() == Some("1");
     let mut log_store = FileLogStore::open(&data_dir, raft_fsync).await?;
     let committed = log_store.read_committed().await?;
-    let sm = TrieStateMachine::new(store, data_dir, committed).await?;
+
+    // Minimal recovery: rebuild the in-memory trie by replaying committed Raft log entries
+    // before starting the Raft state machine.
+    //
+    // This keeps the state machine free of persistence/path concerns (Phase 8 boundary cleanup),
+    // while still allowing restart recovery without snapshots.
+    let mut last_membership: StoredMembership<u64, BasicNode> = StoredMembership::default();
+    if let Some(c) = committed {
+        let ents = log_store.try_get_log_entries(0..=c.index).await?;
+        for ent in ents {
+            match ent.payload {
+                EntryPayload::Blank => {}
+                EntryPayload::Normal(cmd) => {
+                    store
+                        .apply_word(&cmd.tenant, &cmd.word)
+                        .await
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                }
+                EntryPayload::Membership(mem) => {
+                    last_membership = StoredMembership::new(Some(ent.log_id), mem);
+                }
+            }
+        }
+    }
+
+    let sm = TrieStateMachine::new(store, committed, last_membership);
     let net = GrpcRaftNetworkFactory;
 
     let raft = Raft::new(node_id, cfg, net, log_store, sm).await?;
@@ -239,10 +268,16 @@ pub async fn build_raft(
                 attempt += 1;
 
                 // 1) Initialize as a single-node cluster (self as voter).
-                let init_ok = raft_bg
+                let init_ok = match raft_bg
                     .initialize(BTreeMap::from([(node_id, self_node.clone())]))
                     .await
-                    .is_ok();
+                {
+                    Ok(()) => true,
+                    // On restart with persisted state, initialize is not allowed. That's fine: it means
+                    // the cluster was already initialized earlier.
+                    Err(openraft::error::RaftError::APIError(InitializeError::NotAllowed(_))) => true,
+                    Err(_) => false,
+                };
 
                 // 2) Add peers as learners.
                 let mut ok = init_ok;

@@ -21,12 +21,11 @@ async fn sayhello_honors_top_k_and_returns_matches() {
         "a-z",
         data_dir.to_str().unwrap(),
         false,
-        false,
     )
     .await;
 
     let partition_map = format!("a-z={}", srv_addr);
-    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1, 1).await;
+    let (_lb, lb_addr) = start_lb(plb, &partition_map, 1).await;
 
     // Seed: a few deterministic completions.
     put_word(&lb_addr, "power", "app").await.unwrap();
@@ -47,4 +46,3 @@ async fn sayhello_honors_top_k_and_returns_matches() {
     let r50 = say_hello_reply(&lb_addr, "power", "app", 50).await;
     assert_eq!(r50.matches, vec!["app".to_string(), "apple".to_string(), "apply".to_string()]);
 }
-

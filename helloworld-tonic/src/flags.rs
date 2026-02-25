@@ -11,6 +11,5 @@ fn env_bool(key: &str, default: bool) -> bool {
 
 // Feature flags only.
 pub fn is_raft_enabled() -> bool {
-    env_bool("RAFT_ENABLED", false)
+    env_bool("RAFT_ENABLED", true)
 }
-

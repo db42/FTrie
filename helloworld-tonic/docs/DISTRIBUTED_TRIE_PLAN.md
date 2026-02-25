@@ -234,7 +234,7 @@ Prometheus metrics:
 #### [NEW] k8s/statefulset.yaml
 StatefulSet for stable network identities:
 - Headless service for peer discovery
-- Persistent volume claims for WAL
+- Persistent volume claims for Raft log + snapshots
 - Pod anti-affinity for HA
 
 #### [NEW] k8s/configmap.yaml
@@ -261,15 +261,13 @@ Cluster configuration:
 - Add standard gRPC health checks on servers (`grpc.health.v1.Health`)
 - LB does random replica selection + active health probing + bounded retries/failover
 
-### Phase 3: Writes + Quorums + Durability (Implemented)
-- Add write API (`PutWord`)
-- Replication model: LB fanout to replicas and acknowledge based on `W` successes
-- Read model: require `R` successful replica responses
-- Persist writes per replica via WAL and replay on restart (`DATA_DIR/*.wal`, `FSYNC` optional)
+### Phase 3: Writes + Durability (Deprecated)
+- This project no longer supports LB-fanout replication + per-node WAL.
+- Writes are persisted and replicated via Raft (Phase 4+).
 
 ### Phase 4: Consensus (Raft) + Leader-Based Replication (Implemented MVP)
 - Integrate `openraft` for per-shard leader election and membership changes
-- Replace LB fanout writes with leader-coordinated replication (log replication + commit index)
+- Replace LB fanout writes with leader-coordinated replication (Raft log replication + commit index)
 
 ### Phase 5: Read Semantics (Raft) - HA / Eventual Reads First
 - Document Raft-mode read semantics as HA/eventual by default.
@@ -297,7 +295,6 @@ Cluster configuration:
 
 ### Phase 8: Storage Boundary Cleanup (Raft)
 - Remove `data_dir` from the Raft state machine/build path:
-- Today `data_dir` is owned/used by `ShardStore` (per-node WAL in fanout mode).
 - For persistent Raft, attach `data_dir` to Raft storage implementations (raft log store + snapshot store), not the trie state machine.
 - Prepare for snapshots + log compaction after the boundary is cleaned up.
 
@@ -307,7 +304,7 @@ Cluster configuration:
 - Structured logging + tracing
 
 ### Phase 10: Kubernetes + Production Hardening
-- StatefulSet deployment with PVCs for WAL/snapshots
+- StatefulSet deployment with PVCs for Raft log/snapshots
 - CI/CD pipeline
 - Load testing + benchmarking and failure injection
 

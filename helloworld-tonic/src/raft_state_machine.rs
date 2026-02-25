@@ -1,7 +1,4 @@
-use std::collections::BTreeMap;
 use std::io;
-use std::io::Read;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use openraft::storage::RaftStateMachine;
@@ -14,7 +11,6 @@ use openraft::{BasicNode, Entry, EntryPayload};
 use tokio::sync::Mutex;
 
 use crate::raft_node::{TrieRaftConfig, TrieResponse};
-use crate::raft_storage::LogRecord;
 use crate::store::ShardStore;
 
 pub struct TrieSnapshotBuilder;
@@ -35,7 +31,6 @@ impl openraft::RaftSnapshotBuilder<TrieRaftConfig> for TrieSnapshotBuilder {
 pub struct TrieStateMachine {
     store: Arc<ShardStore>,
     inner: Arc<Mutex<StateMachineInner>>,
-    data_dir: String,
 }
 
 #[derive(Default)]
@@ -45,98 +40,19 @@ struct StateMachineInner {
 }
 
 impl TrieStateMachine {
-    pub async fn new(
+    pub fn new(
         store: Arc<ShardStore>,
-        data_dir: String,
-        committed: Option<LogId<u64>>,
-    ) -> Result<Self, io::Error> {
-        let raft_dir = PathBuf::from(&data_dir).join("raft");
-        tokio::fs::create_dir_all(&raft_dir).await?;
-        let log_path = raft_dir.join("log.aof");
-
-        // Rebuild the in-memory trie by replaying committed entries from the Raft log.
-        //
-        // This is required because our trie is in-memory only and we haven't implemented snapshots yet.
-        // We only apply up to the last persisted committed log id.
-        let limit = committed.map(|c| c.index).unwrap_or(0);
-        let mut last_membership: StoredMembership<u64, BasicNode> = StoredMembership::default();
-
-        if limit > 0 {
-            let mut logs: BTreeMap<u64, Entry<TrieRaftConfig>> = BTreeMap::new();
-
-            let log_bytes = match tokio::fs::read(&log_path).await {
-                Ok(d) => d,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(e),
-            };
-
-            let mut cur = std::io::Cursor::new(log_bytes);
-            loop {
-                let mut len_buf = [0u8; 4];
-                if let Err(e) = cur.read_exact(&mut len_buf) {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
-                        break;
-                    }
-                    return Err(e);
-                }
-                let len = u32::from_le_bytes(len_buf) as usize;
-                let pos = cur.position() as usize;
-                let end = pos.saturating_add(len);
-                let buf = cur.get_ref();
-                if end > buf.len() {
-                    break;
-                }
-                let bytes = buf[pos..end].to_vec();
-                cur.set_position(end as u64);
-
-                let rec: LogRecord = match bincode::deserialize(&bytes) {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-
-                match rec {
-                    LogRecord::Entry(ent) => {
-                        if ent.log_id.index > limit {
-                            continue;
-                        }
-                        logs.insert(ent.log_id.index, ent);
-                    }
-                    LogRecord::TruncateFrom(t) => {
-                        let start = t.index;
-                        let keys: Vec<u64> = logs.range(start..).map(|(k, _)| *k).collect();
-                        for k in keys {
-                            logs.remove(&k);
-                        }
-                    }
-                }
-            }
-
-            for (_idx, ent) in logs.iter() {
-                match &ent.payload {
-                    EntryPayload::Blank => {}
-                    EntryPayload::Normal(cmd) => {
-                        // Ignore errors here, but surface them as IO error; without applying we can't be correct.
-                        store
-                            .apply_word(&cmd.tenant, &cmd.word)
-                            .await
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                    }
-                    EntryPayload::Membership(mem) => {
-                        last_membership = StoredMembership::new(Some(ent.log_id), mem.clone());
-                    }
-                }
-            }
-        }
-
+        last_applied: Option<LogId<u64>>,
+        last_membership: StoredMembership<u64, BasicNode>,
+    ) -> Self {
         let mut inner = StateMachineInner::default();
-        inner.last_applied = committed;
+        inner.last_applied = last_applied;
         inner.last_membership = last_membership;
 
-        Ok(Self {
+        Self {
             store,
             inner: Arc::new(Mutex::new(inner)),
-            data_dir,
-        })
+        }
     }
 }
 
@@ -199,22 +115,12 @@ impl RaftStateMachine<TrieRaftConfig> for TrieStateMachine {
     }
 
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<tokio::fs::File>, StorageError<u64>> {
-        let path = PathBuf::from(&self.data_dir).join("raft-receiving.snapshot");
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .truncate(true)
-            .open(&path)
-            .await
-            .map_err(|e| {
-                StorageError::from_io_error(
-                    openraft::ErrorSubject::Snapshot(None),
-                    openraft::ErrorVerb::Write,
-                    e,
-                )
-            })?;
-        Ok(Box::new(file))
+        // Snapshotting is disabled by config (SnapshotPolicy::Never) and unimplemented for now.
+        Err(StorageError::from_io_error(
+            openraft::ErrorSubject::Snapshot(None),
+            openraft::ErrorVerb::Write,
+            io::Error::new(io::ErrorKind::Unsupported, "snapshot not implemented"),
+        ))
     }
 
     async fn install_snapshot(
@@ -234,4 +140,3 @@ impl RaftStateMachine<TrieRaftConfig> for TrieStateMachine {
         Ok(None)
     }
 }
-

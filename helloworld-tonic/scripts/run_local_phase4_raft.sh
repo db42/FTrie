@@ -10,7 +10,8 @@ echo "Building..."
 cargo build --bins >/dev/null
 
 R="${R:-1}"
-W="${W:-1}"
+# Set CLEAN=1 to wipe persisted raft state before starting.
+CLEAN="${CLEAN:-0}"
 # Optional: set TOP_K (e.g. TOP_K=10) to include it in SayHello grpcurl examples.
 TOP_K="${TOP_K:-}"
 # Optional: set DEFAULT_TOP_K (e.g. DEFAULT_TOP_K=10) to change server-side default when
@@ -57,11 +58,12 @@ kill_listeners_on_port "${N2_PORT}"
 kill_listeners_on_port "${N3_PORT}"
 
 # NOTE:
-# - Our current Raft storage is in-memory: restarting a node loses raft state.
-# - DATA_DIR is still required by the server because non-raft mode uses WAL; Raft mode doesn't
-#   persist yet.
+# - Raft state is persisted under DATA_DIR/raft (log.aof, vote.aof, committed.aof).
+# - Use CLEAN=1 to wipe persisted raft state.
 echo "Starting shard j-r (RF=3) with Raft..."
-rm -rf ./data-raft >/dev/null 2>&1 || true
+if [[ "${CLEAN}" == "1" ]]; then
+  rm -rf ./data-raft >/dev/null 2>&1 || true
+fi
 mkdir -p ./data-raft/n1 ./data-raft/n2 ./data-raft/n3
 
 RAFT_MEMBERS="1=${N1_ADDR},2=${N2_ADDR},3=${N3_ADDR}"
@@ -71,14 +73,18 @@ RAFT_MEMBERS="1=${N1_ADDR},2=${N2_ADDR},3=${N3_ADDR}"
   export BIND_ADDR="127.0.0.1:${N1_PORT}"
   export PREFIX_RANGE="j-r"
   export DATA_DIR="./data-raft/n1"
-  export FSYNC="0"
+  export RAFT_FSYNC="0"
   export INCLUDE_NODE_ID_IN_REPLY="1"
   export DISABLE_STATIC_INDEX="1"
   if [[ -n "${DEFAULT_TOP_K}" ]]; then export DEFAULT_TOP_K="${DEFAULT_TOP_K}"; fi
 
   export RAFT_ENABLED="1"
   export RAFT_NODE_ID="1"
-  export RAFT_BOOTSTRAP="1"
+  if [[ "${CLEAN}" == "1" ]]; then
+    export RAFT_BOOTSTRAP="1"
+  else
+    export RAFT_BOOTSTRAP="0"
+  fi
   export RAFT_MEMBERS="$RAFT_MEMBERS"
 
   ./target/debug/helloworld-server
@@ -90,7 +96,7 @@ PID_N1=$!
   export BIND_ADDR="127.0.0.1:${N2_PORT}"
   export PREFIX_RANGE="j-r"
   export DATA_DIR="./data-raft/n2"
-  export FSYNC="0"
+  export RAFT_FSYNC="0"
   export INCLUDE_NODE_ID_IN_REPLY="1"
   export DISABLE_STATIC_INDEX="1"
   if [[ -n "${DEFAULT_TOP_K}" ]]; then export DEFAULT_TOP_K="${DEFAULT_TOP_K}"; fi
@@ -108,7 +114,7 @@ PID_N2=$!
   export BIND_ADDR="127.0.0.1:${N3_PORT}"
   export PREFIX_RANGE="j-r"
   export DATA_DIR="./data-raft/n3"
-  export FSYNC="0"
+  export RAFT_FSYNC="0"
   export INCLUDE_NODE_ID_IN_REPLY="1"
   export DISABLE_STATIC_INDEX="1"
   if [[ -n "${DEFAULT_TOP_K}" ]]; then export DEFAULT_TOP_K="${DEFAULT_TOP_K}"; fi
@@ -123,11 +129,10 @@ PID_N3=$!
 
 sleep 0.8
 
-echo "Starting LB (LB_WRITE_MODE=raft, R=$R W=$W)..."
+echo "Starting LB (Raft-only, R=$R)..."
 (
   export BIND_ADDR="127.0.0.1:${LB_PORT}"
   export LB_POLICY="random"
-  export LB_WRITE_MODE="raft"
   export LB_MAX_ATTEMPTS="6"
   export LB_HEALTH_INTERVAL_MS="500"
   export LB_FAIL_AFTER="1"
@@ -135,7 +140,6 @@ echo "Starting LB (LB_WRITE_MODE=raft, R=$R W=$W)..."
   export READ_TIMEOUT_MS="300"
   export WRITE_TIMEOUT_MS="1200"
   export R="$R"
-  export W="$W"
   export PARTITION_MAP="j-r=${N1_ADDR}|${N2_ADDR}|${N3_ADDR}"
   ./target/debug/helloworld-lb
 ) &
@@ -143,6 +147,9 @@ PID_LB=$!
 
 echo "Ready:"
 echo "  LB: http://127.0.0.1:${LB_PORT}"
+if [[ "${CLEAN}" == "1" ]]; then
+  echo "  (CLEAN=1: raft state wiped)"
+fi
 echo "  j-r replicas:"
 echo "    n1: ${N1_PORT}(pid=$PID_N1)"
 echo "    n2: ${N2_PORT}(pid=$PID_N2)"

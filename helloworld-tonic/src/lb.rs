@@ -83,10 +83,8 @@ pub struct LoadBalancer {
     fail_after: u32,
     recover_after: u32,
     read_quorum: usize,
-    write_quorum: usize,
     read_timeout: Duration,
     write_timeout: Duration,
-    write_mode: String,
 }
 
 async fn mark_backend_result(
@@ -185,7 +183,7 @@ impl Greeter for LoadBalancer {
             )));
         }
 
-        // Phase 3: random replica selection + read quorum (R successes).
+        // Random replica selection + read quorum (R successes).
         let mut candidates: Vec<String> = Vec::new();
         for b in &partition.backends {
             if is_backend_healthy(&self.health, b).await {
@@ -275,90 +273,7 @@ impl Greeter for LoadBalancer {
             .route(&word)
             .ok_or_else(|| Status::invalid_argument("word must start with a-z"))?;
 
-        if self.write_mode == "raft" {
-            // In Raft mode, the shard nodes handle replication. LB only needs to find a leader.
-            let mut candidates: Vec<String> = Vec::new();
-            for b in &partition.backends {
-                if is_backend_healthy(&self.health, b).await {
-                    candidates.push(b.clone());
-                }
-            }
-            if candidates.is_empty() {
-                candidates = partition.backends.clone();
-            }
-            candidates.shuffle(&mut rand::thread_rng());
-
-            let mut queue = candidates;
-            let mut seen = HashSet::new();
-            let mut attempts = 0usize;
-            while attempts < self.max_attempts.max(1) && !queue.is_empty() {
-                let backend = queue.remove(0);
-                if !seen.insert(backend.clone()) {
-                    continue;
-                }
-                attempts += 1;
-
-                let req = inner.clone();
-                let timeout = self.write_timeout;
-                let fut = async {
-                    let mut client = GreeterClient::connect(backend.clone())
-                        .await
-                        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                    client.put_word(Request::new(req)).await?;
-                    Ok::<(), Status>(())
-                };
-
-                match time::timeout(timeout, fut).await {
-                    Ok(Ok(())) => {
-                        mark_backend_result(&self.health, &backend, true, self.fail_after, self.recover_after).await;
-                        return Ok(Response::new(PutWordReply {
-                            applied: true,
-                            message: "ok".to_string(),
-                        }));
-                    }
-                    Ok(Err(e)) => {
-                        // Followers return FAILED_PRECONDITION with a leader hint via metadata `x-raft-leader`.
-                        if e.code() == Code::FailedPrecondition {
-                            if let Some(v) = e.metadata().get("x-raft-leader") {
-                                if let Ok(leader) = v.to_str() {
-                                    let leader = leader.trim();
-                                    if !leader.is_empty() {
-                                        queue.insert(0, leader.to_string());
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        let ok_for_health = !status_indicates_backend_fault(e.code());
-                        mark_backend_result(
-                            &self.health,
-                            &backend,
-                            ok_for_health,
-                            self.fail_after,
-                            self.recover_after,
-                        )
-                        .await;
-                        println!("backend write failed: backend={} err={}", backend, e);
-                    }
-                    Err(_) => {
-                        mark_backend_result(&self.health, &backend, false, self.fail_after, self.recover_after).await;
-                        println!("backend write timeout: backend={}", backend);
-                    }
-                }
-            }
-
-            return Err(Status::unavailable("write failed (no leader available)"));
-        }
-
-        if self.write_quorum > partition.backends.len() {
-            return Err(Status::invalid_argument(format!(
-                "W={} cannot be satisfied with RF={}",
-                self.write_quorum,
-                partition.backends.len()
-            )));
-        }
-
+        // Raft-only mode: shard nodes handle replication. LB only needs to find a leader.
         let mut candidates: Vec<String> = Vec::new();
         for b in &partition.backends {
             if is_backend_healthy(&self.health, b).await {
@@ -370,54 +285,48 @@ impl Greeter for LoadBalancer {
         }
         candidates.shuffle(&mut rand::thread_rng());
 
-        let mut set = JoinSet::new();
-        for backend in candidates {
+        let mut queue = candidates;
+        let mut seen = HashSet::new();
+        let mut attempts = 0usize;
+        while attempts < self.max_attempts.max(1) && !queue.is_empty() {
+            let backend = queue.remove(0);
+            if !seen.insert(backend.clone()) {
+                continue;
+            }
+            attempts += 1;
+
             let req = inner.clone();
             let timeout = self.write_timeout;
-            set.spawn(async move {
-                let fut = async {
-                    let mut client = GreeterClient::connect(backend.clone())
-                        .await
-                        .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                    let resp = client.put_word(Request::new(req)).await?;
-                    Ok::<PutWordReply, tonic::Status>(resp.into_inner())
-                };
-                let res = time::timeout(timeout, fut).await;
-                (backend, res)
-            });
-        }
+            let fut = async {
+                let mut client = GreeterClient::connect(backend.clone())
+                    .await
+                    .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
+                client.put_word(Request::new(req)).await?;
+                Ok::<(), Status>(())
+            };
 
-        let mut successes = 0usize;
-        while let Some(joined) = set.join_next().await {
-            let (backend, res) = joined.map_err(|e| Status::internal(format!("task failed: {}", e)))?;
-            match res {
-                Ok(Ok(_reply)) => {
+            match time::timeout(timeout, fut).await {
+                Ok(Ok(())) => {
                     mark_backend_result(&self.health, &backend, true, self.fail_after, self.recover_after).await;
-                    successes += 1;
-                    if successes >= self.write_quorum {
-                        // Quorum achieved: ACK immediately, but allow remaining replica writes
-                        // to continue in the background to reduce divergence.
-                        let mut background = set;
-                        let health = self.health.clone();
-                        let fail_after = self.fail_after;
-                        let recover_after = self.recover_after;
-                        tokio::spawn(async move {
-                            while let Some(joined) = background.join_next().await {
-                                let Ok((backend, res)) = joined else {
-                                    continue;
-                                };
-                                let ok = matches!(res, Ok(Ok(_)));
-                                mark_backend_result(&health, &backend, ok, fail_after, recover_after).await;
-                            }
-                        });
-
-                        return Ok(Response::new(PutWordReply {
-                            applied: true,
-                            message: "ok".to_string(),
-                        }));
-                    }
+                    return Ok(Response::new(PutWordReply {
+                        applied: true,
+                        message: "ok".to_string(),
+                    }));
                 }
                 Ok(Err(e)) => {
+                    // Followers return FAILED_PRECONDITION with a leader hint via metadata `x-raft-leader`.
+                    if e.code() == Code::FailedPrecondition {
+                        if let Some(v) = e.metadata().get("x-raft-leader") {
+                            if let Ok(leader) = v.to_str() {
+                                let leader = leader.trim();
+                                if !leader.is_empty() {
+                                    queue.insert(0, leader.to_string());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     let ok_for_health = !status_indicates_backend_fault(e.code());
                     mark_backend_result(
                         &self.health,
@@ -434,15 +343,9 @@ impl Greeter for LoadBalancer {
                     println!("backend write timeout: backend={}", backend);
                 }
             }
-
-            let remaining = set.len();
-            if successes + remaining < self.write_quorum {
-                set.abort_all();
-                break;
-            }
         }
 
-        Err(Status::unavailable("write quorum not met"))
+        Err(Status::unavailable("write failed (no leader available)"))
     }
 }
 
@@ -491,7 +394,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("LB configured: PARTITION_MAP={}", pm_str);
 
     let read_quorum: usize = env_or_default("R", "1").parse().unwrap_or(1).max(1);
-    let write_quorum: usize = env_or_default("W", "1").parse().unwrap_or(1).max(1);
     let read_timeout_ms: u64 = env_or_default("READ_TIMEOUT_MS", "200").parse().unwrap_or(200);
     let write_timeout_ms: u64 = env_or_default("WRITE_TIMEOUT_MS", "500").parse().unwrap_or(500);
 
@@ -505,10 +407,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fail_after: fail_after.max(1),
         recover_after: recover_after.max(1),
         read_quorum,
-        write_quorum,
         read_timeout: Duration::from_millis(read_timeout_ms.max(10)),
         write_timeout: Duration::from_millis(write_timeout_ms.max(10)),
-        write_mode: env_or_default("LB_WRITE_MODE", "fanout"),
     };
 
     println!("Load balancer listening on {}", addr);
