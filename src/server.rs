@@ -1,6 +1,6 @@
 use tonic::{transport::Server, Request, Response, Status};
 
-use ftrie_proto::greeter_server::{Greeter, GreeterServer};
+use ftrie_proto::prefix_matcher_server::{PrefixMatcher, PrefixMatcherServer};
 use ftrie_proto::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 
 mod indexer;
@@ -41,7 +41,7 @@ use std::sync::atomic::Ordering;
 // # Make a GRPC request
 // grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
 //   -d '{"name": "apr", "tenant": "thoughtspot"}' \
-//   '[::1]:50051' ftrie.Greeter/GetPrefixMatch
+//   '[::1]:50051' ftrie.PrefixMatcher/GetPrefixMatch
 // ```
 // 
 // # Implementation Details
@@ -60,7 +60,7 @@ pub mod raft_proto {
     tonic::include_proto!("raft");
 }
 
-pub struct MyGreeter {
+pub struct PrefixMatcherService {
     node_id: String,
     include_node_id_in_reply: bool,
     include_message_in_reply: bool,
@@ -71,7 +71,7 @@ pub struct MyGreeter {
 }
 
 #[tonic::async_trait]
-impl Greeter for MyGreeter {
+impl PrefixMatcher for PrefixMatcherService {
 
     async fn get_prefix_match(
         &self,
@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    let greeter = MyGreeter {
+    let service = PrefixMatcherService {
         node_id: node_id.clone(),
         include_node_id_in_reply,
         include_message_in_reply,
@@ -227,24 +227,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Server configured: NODE_ID={} BIND_ADDR={} PREFIX_RANGE={}-{} DATA_DIR={} INDEX_BACKEND={} INCLUDE_MESSAGE={} DEFAULT_TOP_K={}",
         node_id,
         bind_addr,
-        greeter.store.prefix_range().start,
-        greeter.store.prefix_range().end,
+        service.store.prefix_range().start,
+        service.store.prefix_range().end,
         data_dir,
-        greeter.store.backend_name(),
+        service.store.backend_name(),
         if include_message_in_reply { 1 } else { 0 },
         default_top_k
     );
 
     let (mut reporter, health_service) = health_reporter();
     reporter
-        .set_serving::<GreeterServer<MyGreeter>>()
+        .set_serving::<PrefixMatcherServer<PrefixMatcherService>>()
         .await;
 
     let raft_rpc = raft_node::RaftRpc::new(raft);
     Server::builder()
         .add_service(health_service)
         .add_service(raft_proto::raft_server::RaftServer::new(raft_rpc))
-        .add_service(GreeterServer::new(greeter))
+        .add_service(PrefixMatcherServer::new(service))
         .serve(addr)
         .await?;
 

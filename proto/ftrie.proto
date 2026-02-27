@@ -1,7 +1,7 @@
 syntax = "proto3";
 package ftrie;
 
-service Greeter {
+service PrefixMatcher {
     rpc GetPrefixMatch (HelloRequest) returns (HelloReply);
     rpc PutWord (PutWordRequest) returns (PutWordReply);
 }

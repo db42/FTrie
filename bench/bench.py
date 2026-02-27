@@ -337,7 +337,7 @@ async def run_workload(
 
     async def worker() -> Tuple[int, int, int, float, float, HdrHistogram, Dict[str, int]]:
         channel = grpc.aio.insecure_channel(endpoint)
-        stub = ftrie_pb2_grpc.GreeterStub(channel)
+        stub = ftrie_pb2_grpc.PrefixMatcherStub(channel)
         hist = HdrHistogram(1, 60_000_000, 3)  # 1us..60s in us
         requests_total = 0
         requests_ok = 0

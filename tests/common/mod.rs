@@ -14,7 +14,7 @@ pub mod ftrie_proto {
     tonic::include_proto!("ftrie");
 }
 
-use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::prefix_matcher_client::PrefixMatcherClient;
 use ftrie_proto::{HelloReply, HelloRequest, PutWordRequest};
 
 pub fn blackbox_enabled() -> bool {
@@ -248,7 +248,7 @@ pub async fn get_prefix_match_result_top_k(
     name: &str,
     top_k: u32,
 ) -> Result<String, Status> {
-    let mut client = GreeterClient::connect(addr.to_string())
+    let mut client = PrefixMatcherClient::connect(addr.to_string())
         .await
         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
     let req = HelloRequest {
@@ -270,7 +270,7 @@ pub async fn get_prefix_match_reply_result(
     name: &str,
     top_k: u32,
 ) -> Result<HelloReply, Status> {
-    let mut client = GreeterClient::connect(addr.to_string())
+    let mut client = PrefixMatcherClient::connect(addr.to_string())
         .await
         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
     let req = HelloRequest {
@@ -289,7 +289,7 @@ pub async fn get_prefix_match_reply(addr: &str, tenant: &str, name: &str, top_k:
 }
 
 pub async fn put_word(addr: &str, tenant: &str, word: &str) -> Result<(), Status> {
-    let mut client = GreeterClient::connect(addr.to_string())
+    let mut client = PrefixMatcherClient::connect(addr.to_string())
         .await
         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
     let req = PutWordRequest {

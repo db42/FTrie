@@ -1,7 +1,7 @@
 
 use tonic::{transport::Server, Request, Response, Status};
-use ftrie_proto::greeter_server::{Greeter, GreeterServer};
-use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::prefix_matcher_client::PrefixMatcherClient;
+use ftrie_proto::prefix_matcher_server::{PrefixMatcher, PrefixMatcherServer};
 use ftrie_proto::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 
 mod partition;
@@ -160,7 +160,7 @@ async fn probe_backends_forever(
 }
 
 #[tonic::async_trait]
-impl Greeter for LoadBalancer {
+impl PrefixMatcher for LoadBalancer {
     async fn get_prefix_match(
         &self,
         request: Request<HelloRequest>,
@@ -206,7 +206,7 @@ impl Greeter for LoadBalancer {
             let timeout = self.read_timeout;
             set.spawn(async move {
                 let fut = async {
-                    let mut client = GreeterClient::connect(backend.clone())
+                    let mut client = PrefixMatcherClient::connect(backend.clone())
                         .await
                         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
                     let resp = client.get_prefix_match(Request::new(req)).await?;
@@ -298,7 +298,7 @@ impl Greeter for LoadBalancer {
             let req = inner.clone();
             let timeout = self.write_timeout;
             let fut = async {
-                let mut client = GreeterClient::connect(backend.clone())
+                let mut client = PrefixMatcherClient::connect(backend.clone())
                     .await
                     .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
                 client.put_word(Request::new(req)).await?;
@@ -415,12 +415,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut reporter, health_service) = health_reporter();
     reporter
-        .set_serving::<GreeterServer<LoadBalancer>>()
+        .set_serving::<PrefixMatcherServer<LoadBalancer>>()
         .await;
 
     Server::builder()
         .add_service(health_service)
-        .add_service(GreeterServer::new(lb))
+        .add_service(PrefixMatcherServer::new(lb))
         .serve(addr)
         .await?;
 

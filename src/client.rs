@@ -1,6 +1,6 @@
 use tonic::Request;
 
-use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::prefix_matcher_client::PrefixMatcherClient;
 use ftrie_proto::HelloRequest;
 
 pub mod ftrie_proto {
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .unwrap_or_else(|| "http://[::1]:50052".to_string());
 
-    let mut client = GreeterClient::connect(addr).await?;
+    let mut client = PrefixMatcherClient::connect(addr).await?;
     let req = HelloRequest { name, tenant, top_k };
     let resp = client.get_prefix_match(Request::new(req)).await?;
     println!("{:?}", resp.into_inner());
