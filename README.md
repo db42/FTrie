@@ -50,7 +50,7 @@ Example query:
 ```bash
 grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
   -d '{"name":"app","tenant":"power"}' \
-  127.0.0.1:50051 helloworld.Greeter/GetPrefixMatch
+  127.0.0.1:50051 ftrie.Greeter/GetPrefixMatch
 ```
 
 ### 3-Node Raft Cluster
@@ -64,7 +64,7 @@ Example write through LB:
 ```bash
 grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
   -d '{"word":"jokerraft","tenant":"power"}' \
-  127.0.0.1:50052 helloworld.Greeter/PutWord
+  127.0.0.1:50052 ftrie.Greeter/PutWord
 ```
 
 ## Architecture
@@ -98,7 +98,6 @@ Notable integration tests:
 
 ## Known Limitations
 
-- Public gRPC package/service names are still legacy `helloworld.*`.
 - Input validation is currently ASCII `a-z` focused in the live request path.
 - `INDEX_BACKEND=fst` is currently read-only for writes (`PutWord` requires trie backend).
 

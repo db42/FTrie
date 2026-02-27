@@ -10,12 +10,12 @@ use tonic::{Request, Status};
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 
-pub mod hello_world {
-    tonic::include_proto!("helloworld");
+pub mod ftrie_proto {
+    tonic::include_proto!("ftrie");
 }
 
-use hello_world::greeter_client::GreeterClient;
-use hello_world::{HelloReply, HelloRequest, PutWordRequest};
+use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::{HelloReply, HelloRequest, PutWordRequest};
 
 pub fn blackbox_enabled() -> bool {
     std::env::var("RUN_BLACKBOX_IT").ok().as_deref() == Some("1")

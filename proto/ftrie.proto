@@ -1,5 +1,5 @@
 syntax = "proto3";
-package helloworld;
+package ftrie;
 
 service Greeter {
     rpc GetPrefixMatch (HelloRequest) returns (HelloReply);

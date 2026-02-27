@@ -1,10 +1,10 @@
 use tonic::Request;
 
-use hello_world::greeter_client::GreeterClient;
-use hello_world::HelloRequest;
+use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::HelloRequest;
 
-pub mod hello_world {
-    tonic::include_proto!("helloworld");
+pub mod ftrie_proto {
+    tonic::include_proto!("ftrie");
 }
 
 // Usage:

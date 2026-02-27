@@ -1,8 +1,8 @@
 
 use tonic::{transport::Server, Request, Response, Status};
-use hello_world::greeter_server::{Greeter, GreeterServer};
-use hello_world::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
-use hello_world::greeter_client::GreeterClient;
+use ftrie_proto::greeter_server::{Greeter, GreeterServer};
+use ftrie_proto::greeter_client::GreeterClient;
+use ftrie_proto::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 
 mod partition;
 use partition::{env_or_default, PartitionMap};
@@ -20,8 +20,8 @@ use tonic_health::server::health_reporter;
 use tonic::transport::Channel;
 use tonic::Code;
 
-pub mod hello_world {
-    tonic::include_proto!("helloworld"); 
+pub mod ftrie_proto {
+    tonic::include_proto!("ftrie");
 }
 
 #[derive(Debug, Clone)]

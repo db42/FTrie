@@ -7,4 +7,3 @@ data-*
 *.pem
 bench/results
 bench/workloads
-helloworld-tonic

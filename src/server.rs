@@ -1,7 +1,7 @@
 use tonic::{transport::Server, Request, Response, Status};
 
-use hello_world::greeter_server::{Greeter, GreeterServer};
-use hello_world::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
+use ftrie_proto::greeter_server::{Greeter, GreeterServer};
+use ftrie_proto::{HelloReply, HelloRequest, PutWordReply, PutWordRequest};
 
 mod indexer;
 mod fst_index;
@@ -41,7 +41,7 @@ use std::sync::atomic::Ordering;
 // # Make a GRPC request
 // grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
 //   -d '{"name": "apr", "tenant": "thoughtspot"}' \
-//   '[::1]:50051' helloworld.Greeter/GetPrefixMatch
+//   '[::1]:50051' ftrie.Greeter/GetPrefixMatch
 // ```
 // 
 // # Implementation Details
@@ -52,8 +52,8 @@ use std::sync::atomic::Ordering;
 // - Supports concurrent requests across tenants
 
 
-pub mod hello_world {
-    tonic::include_proto!("helloworld");
+pub mod ftrie_proto {
+    tonic::include_proto!("ftrie");
 }
 
 pub mod raft_proto {

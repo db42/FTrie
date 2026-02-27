@@ -342,7 +342,7 @@ cargo test --test cluster_formation
 
 # Load test with ghz
 ghz --insecure --proto ./proto/ftrie.proto \
-    --call helloworld.Greeter/GetPrefixMatch \
+    --call ftrie.Greeter/GetPrefixMatch \
     -d '{"name":"app","tenant":"default"}' \
     -n 10000 -c 50 \
     localhost:50052

@@ -3,7 +3,7 @@ mod common;
 use common::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sayhello_honors_top_k_and_returns_matches() {
+async fn get_prefix_match_honors_top_k_and_returns_matches() {
     if skip_if_not_blackbox() {
         return;
     }

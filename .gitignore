@@ -8,11 +8,7 @@ target/
 
 # Placeholder manifests
 ftrie.yaml
-helloworld-tonic.yaml
 
 # Local data dirs (WAL / test artifacts)
 data/
 data-*/
-
-# Legacy local artifacts kept from pre-consolidation layout
-helloworld-tonic/

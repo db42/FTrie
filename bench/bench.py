@@ -320,8 +320,8 @@ async def run_workload(
     import grpc  # type: ignore
     from hdrh.histogram import HdrHistogram  # type: ignore
 
-    import helloworld_pb2  # type: ignore
-    import helloworld_pb2_grpc  # type: ignore
+    import ftrie_pb2  # type: ignore
+    import ftrie_pb2_grpc  # type: ignore
 
     queries = _load_queries(workload_path)
     idx = 0
@@ -337,7 +337,7 @@ async def run_workload(
 
     async def worker() -> Tuple[int, int, int, float, float, HdrHistogram, Dict[str, int]]:
         channel = grpc.aio.insecure_channel(endpoint)
-        stub = helloworld_pb2_grpc.GreeterStub(channel)
+        stub = ftrie_pb2_grpc.GreeterStub(channel)
         hist = HdrHistogram(1, 60_000_000, 3)  # 1us..60s in us
         requests_total = 0
         requests_ok = 0
@@ -351,7 +351,7 @@ async def run_workload(
                 await channel.close()
                 return (requests_total, requests_ok, errors, sum_ms, max_ms, hist, err_counts)
             q = await next_query()
-            req = helloworld_pb2.HelloRequest(
+            req = ftrie_pb2.HelloRequest(
                 name=q["prefix"],
                 tenant=q["tenant"],
                 top_k=int(q.get("top_k", 0)),
