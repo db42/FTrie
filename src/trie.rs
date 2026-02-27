@@ -57,6 +57,16 @@ impl Node {
     }
 }
 
+pub fn node_count(trie: &Node) -> u64 {
+    let mut n = 1u64; // count self
+    for child in trie.charMap.iter() {
+        if let Some(c) = child {
+            n += node_count(c);
+        }
+    }
+    n
+}
+
 //on-hold for now; too messy mutable reference rules
 //one approach is non mutable iteration to match the word and mutable
 //iteration to creates rest of the nodes

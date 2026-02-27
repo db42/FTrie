@@ -33,16 +33,16 @@ async fn sayhello_honors_top_k_and_returns_matches() {
     put_word(&lb_addr, "power", "apply").await.unwrap();
 
     // top_k=1 returns just the first completion (and should include the prefix itself if it's a word).
-    let r1 = say_hello_reply(&lb_addr, "power", "app", 1).await;
+    let r1 = get_prefix_match_reply(&lb_addr, "power", "app", 1).await;
     assert_eq!(r1.matches, vec!["app".to_string()]);
 
     // top_k=2 should be stable and bounded.
-    let r2 = say_hello_reply(&lb_addr, "power", "app", 2).await;
+    let r2 = get_prefix_match_reply(&lb_addr, "power", "app", 2).await;
     assert_eq!(r2.matches.len(), 2);
     assert_eq!(r2.matches[0], "app");
     assert!(r2.matches.contains(&"apple".to_string()) || r2.matches.contains(&"apply".to_string()));
 
     // top_k=50 should return all 3 in this test.
-    let r50 = say_hello_reply(&lb_addr, "power", "app", 50).await;
+    let r50 = get_prefix_match_reply(&lb_addr, "power", "app", 50).await;
     assert_eq!(r50.matches, vec!["app".to_string(), "apple".to_string(), "apply".to_string()]);
 }

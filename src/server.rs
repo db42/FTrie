@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 // 
 // # Server Implementation
 // 
-// The server exposes a single GRPC endpoint `SayHello` that accepts:
+// The server exposes a single GRPC endpoint `GetPrefixMatch` that accepts:
 // - A prefix string to search for
 // - A tenant ID to determine which dictionary to search in
 // 
@@ -36,12 +36,12 @@ use std::sync::atomic::Ordering;
 // 
 // ```bash
 // # Start the server
-// cargo run --bin helloworld-server
+// cargo run --bin ftrie-server
 // 
 // # Make a GRPC request
-// grpcurl -plaintext -import-path ./proto -proto helloworld.proto \
+// grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
 //   -d '{"name": "apr", "tenant": "thoughtspot"}' \
-//   '[::1]:50051' helloworld.Greeter/SayHello
+//   '[::1]:50051' helloworld.Greeter/GetPrefixMatch
 // ```
 // 
 // # Implementation Details
@@ -73,7 +73,7 @@ pub struct MyGreeter {
 #[tonic::async_trait]
 impl Greeter for MyGreeter {
 
-    async fn say_hello(
+    async fn get_prefix_match(
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloReply>, Status> {

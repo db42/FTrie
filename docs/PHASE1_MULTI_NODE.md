@@ -1,10 +1,10 @@
 # Phase 1: Static 3-Node Prefix Sharding
 
-This phase runs 3 `helloworld-server` instances, each indexing only a static prefix range, and a `helloworld-lb` that routes requests to the correct server based on the first character of the requested prefix.
+This phase runs 3 `ftrie-server` instances, each indexing only a static prefix range, and a `ftrie-lb` that routes requests to the correct server based on the first character of the requested prefix.
 
 ## Run
 
-From `helloworld-tonic/`:
+From repo root:
 
 ```bash
 ./scripts/run_local_3nodes.sh

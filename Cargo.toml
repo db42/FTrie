@@ -1,19 +1,23 @@
 [package]
-name = "helloworld-tonic"
+name = "ftrie"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]] # server
-name = "helloworld-server"
+name = "ftrie-server"
 path = "src/server.rs"
 
 [[bin]] # load balancer
-name = "helloworld-lb"
+name = "ftrie-lb"
 path = "src/lb.rs"
 
 [[bin]] # client
-name = "helloworld-client"
+name = "ftrie-client"
 path = "src/client.rs"
+
+[[bin]] # memory report / sizing tool
+name = "mem-report"
+path = "src/mem_report.rs"
 
 [dependencies]
 tonic = "0.11"

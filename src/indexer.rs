@@ -79,7 +79,7 @@ impl Indexer {
     {
         // println!("Hello world");
 
-        // let words = lines_from_file("/Users/dushyant.bansal/work/rprojects/helloworld-tonic/words.txt"); //sample
+        // let words = lines_from_file("./words.txt"); // sample
         let words = lines_from_file(filePath); //all words
         // for line in &words {
         //     println!("{:?}", line);

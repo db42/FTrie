@@ -8,9 +8,9 @@ pub mod hello_world {
 }
 
 // Usage:
-//   cargo run --bin helloworld-client -- <prefix> <tenant> [top_k] [addr]
+//   cargo run --bin ftrie-client -- <prefix> <tenant> [top_k] [addr]
 // Example:
-//   cargo run --bin helloworld-client -- apr power http://[::1]:50052
+//   cargo run --bin ftrie-client -- apr power http://[::1]:50052
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut client = GreeterClient::connect(addr).await?;
     let req = HelloRequest { name, tenant, top_k };
-    let resp = client.say_hello(Request::new(req)).await?;
+    let resp = client.get_prefix_match(Request::new(req)).await?;
     println!("{:?}", resp.into_inner());
     Ok(())
 }

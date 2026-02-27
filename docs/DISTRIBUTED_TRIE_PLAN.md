@@ -272,7 +272,7 @@ Cluster configuration:
 ### Phase 5: Read Semantics (Raft) - HA / Eventual Reads First
 - Document Raft-mode read semantics as HA/eventual by default.
 - **Contract (Raft mode, current behavior)**:
-- `SayHello` is served from a node's local in-memory trie without a Raft read barrier.
+- `GetPrefixMatch` is served from a node's local in-memory trie without a Raft read barrier.
 - LB may route reads to any healthy replica (random + retries). If `R>1`, LB requires `R` successful responses
   but does not reconcile/verify payload equality across replicas.
 - **Implication**: reads can be stale if a follower is behind (or immediately after leader change).
@@ -341,8 +341,8 @@ cargo test --test cluster_formation
 ./scripts/chaos_test.sh
 
 # Load test with ghz
-ghz --insecure --proto ./proto/helloworld.proto \
-    --call helloworld.Greeter/SayHello \
+ghz --insecure --proto ./proto/ftrie.proto \
+    --call helloworld.Greeter/GetPrefixMatch \
     -d '{"name":"app","tenant":"default"}' \
     -n 10000 -c 50 \
     localhost:50052

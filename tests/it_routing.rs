@@ -109,7 +109,7 @@ async fn ha_read_succeeds_when_one_replica_down_with_r1() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        match say_hello_result(&lb_addr, "power", "joker").await {
+        match get_prefix_match_result(&lb_addr, "power", "joker").await {
             Ok(msg) => {
                 assert!(msg.contains("node=jr2"), "expected jr2 reply, got: {}", msg);
                 break;
@@ -149,6 +149,6 @@ async fn lb_rejects_invalid_prefix() {
     let partition_map = format!("j-r={}", jr1_addr);
     let (_lb, lb_addr) = start_lb(plb, &partition_map, 1).await;
 
-    let err = say_hello_result(&lb_addr, "power", "jo2").await.unwrap_err();
+    let err = get_prefix_match_result(&lb_addr, "power", "jo2").await.unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
 }

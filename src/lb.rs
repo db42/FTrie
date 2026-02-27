@@ -161,7 +161,7 @@ async fn probe_backends_forever(
 
 #[tonic::async_trait]
 impl Greeter for LoadBalancer {
-    async fn say_hello(
+    async fn get_prefix_match(
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloReply>, Status> {
@@ -209,7 +209,7 @@ impl Greeter for LoadBalancer {
                     let mut client = GreeterClient::connect(backend.clone())
                         .await
                         .map_err(|e| Status::unavailable(format!("connect failed: {}", e)))?;
-                    let resp = client.say_hello(Request::new(req)).await?;
+                    let resp = client.get_prefix_match(Request::new(req)).await?;
                     Ok::<HelloReply, tonic::Status>(resp.into_inner())
                 };
                 let res = time::timeout(timeout, fut).await;

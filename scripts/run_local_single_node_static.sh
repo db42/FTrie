@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Single-node prefix service with built-in static word lists.
 #
-# Starts one `helloworld-server` that loads:
+# Starts one `ftrie-server` that loads:
 # - tenant=thoughtspot from ./words.txt
 # - tenant=power      from ./words_alpha.txt
 #
@@ -69,7 +69,7 @@ kill_listeners_on_port "${PORT}"
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then
   echo "Building..."
-  cargo build --bin helloworld-server >/dev/null
+  cargo build --bin ftrie-server >/dev/null
 fi
 
 mkdir -p "${DATA_DIR}"
@@ -91,7 +91,7 @@ echo "Starting single node on :${PORT} (PREFIX_RANGE=${PREFIX_RANGE})..."
   export DEFAULT_TOP_K="${DEFAULT_TOP_K}"
   export INDEX_BACKEND="${INDEX_BACKEND}"
 
-  ./target/debug/helloworld-server
+  ./target/debug/ftrie-server
 ) &
 PID=$!
 
@@ -109,13 +109,13 @@ echo "  server: 127.0.0.1:${PORT} (pid=${PID})"
 echo "  DISABLE_STATIC_INDEX=${DISABLE_STATIC_INDEX} (0 means preloaded wordlists)"
 echo ""
 echo "Query examples:"
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '${HELLO_REQ_POWER}' \\"
-echo "    127.0.0.1:${PORT} helloworld.Greeter/SayHello"
+echo "    127.0.0.1:${PORT} helloworld.Greeter/GetPrefixMatch"
 echo ""
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '${HELLO_REQ_TS}' \\"
-echo "    127.0.0.1:${PORT} helloworld.Greeter/SayHello"
+echo "    127.0.0.1:${PORT} helloworld.Greeter/GetPrefixMatch"
 echo ""
 echo "Stop:"
 echo "  kill ${PID}"

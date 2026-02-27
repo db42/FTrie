@@ -40,13 +40,11 @@ pub fn http_addr(port: u16) -> String {
 
 fn bin_path(name: &str) -> String {
     match name {
-        "helloworld-server" => option_env!("CARGO_BIN_EXE_helloworld-server")
-            .or(option_env!("CARGO_BIN_EXE_helloworld_server"))
-            .expect("CARGO_BIN_EXE_helloworld-server not set; run via cargo test")
+        "ftrie-server" => option_env!("CARGO_BIN_EXE_ftrie-server")
+            .expect("CARGO_BIN_EXE_ftrie-server not set; run via cargo test")
             .to_string(),
-        "helloworld-lb" => option_env!("CARGO_BIN_EXE_helloworld-lb")
-            .or(option_env!("CARGO_BIN_EXE_helloworld_lb"))
-            .expect("CARGO_BIN_EXE_helloworld-lb not set; run via cargo test")
+        "ftrie-lb" => option_env!("CARGO_BIN_EXE_ftrie-lb")
+            .expect("CARGO_BIN_EXE_ftrie-lb not set; run via cargo test")
             .to_string(),
         _ => panic!("unknown binary {}", name),
     }
@@ -162,11 +160,11 @@ pub fn spawn_server_with_env(
     let addr = format!("127.0.0.1:{}", port);
     let http = http_addr(port);
     let log_path =
-        std::env::temp_dir().join(format!("helloworld-server-{}-{}.log", node_id, port));
+        std::env::temp_dir().join(format!("ftrie-server-{}-{}.log", node_id, port));
     let log = std::fs::File::create(&log_path).expect("create server log");
     let log_err = log.try_clone().expect("clone server log");
 
-    let mut cmd = Command::new(bin_path("helloworld-server"));
+    let mut cmd = Command::new(bin_path("ftrie-server"));
     cmd.env("BIND_ADDR", addr)
         .env("NODE_ID", node_id)
         .env("PREFIX_RANGE", prefix_range)
@@ -212,11 +210,11 @@ pub fn spawn_lb_with_env(
     extra_env: &[(String, String)],
 ) -> Proc {
     let addr = format!("127.0.0.1:{}", port);
-    let log_path = std::env::temp_dir().join(format!("helloworld-lb-{}.log", port));
+    let log_path = std::env::temp_dir().join(format!("ftrie-lb-{}.log", port));
     let log = std::fs::File::create(&log_path).expect("create lb log");
     let log_err = log.try_clone().expect("clone lb log");
 
-    let mut cmd = Command::new(bin_path("helloworld-lb"));
+    let mut cmd = Command::new(bin_path("ftrie-lb"));
     cmd.env("BIND_ADDR", addr)
         .env("PARTITION_MAP", partition_map)
         .env("LB_POLICY", "random")
@@ -240,11 +238,11 @@ pub fn spawn_lb_with_env(
     Proc { child, log_path }
 }
 
-pub async fn say_hello_result(addr: &str, tenant: &str, name: &str) -> Result<String, Status> {
-    say_hello_result_top_k(addr, tenant, name, 0).await
+pub async fn get_prefix_match_result(addr: &str, tenant: &str, name: &str) -> Result<String, Status> {
+    get_prefix_match_result_top_k(addr, tenant, name, 0).await
 }
 
-pub async fn say_hello_result_top_k(
+pub async fn get_prefix_match_result_top_k(
     addr: &str,
     tenant: &str,
     name: &str,
@@ -258,15 +256,15 @@ pub async fn say_hello_result_top_k(
         tenant: tenant.to_string(),
         top_k,
     };
-    let resp = client.say_hello(Request::new(req)).await?;
+    let resp = client.get_prefix_match(Request::new(req)).await?;
     Ok(resp.into_inner().message)
 }
 
-pub async fn say_hello(addr: &str, tenant: &str, name: &str) -> String {
-    say_hello_result(addr, tenant, name).await.unwrap()
+pub async fn get_prefix_match(addr: &str, tenant: &str, name: &str) -> String {
+    get_prefix_match_result(addr, tenant, name).await.unwrap()
 }
 
-pub async fn say_hello_reply_result(
+pub async fn get_prefix_match_reply_result(
     addr: &str,
     tenant: &str,
     name: &str,
@@ -280,12 +278,12 @@ pub async fn say_hello_reply_result(
         tenant: tenant.to_string(),
         top_k,
     };
-    let resp = client.say_hello(Request::new(req)).await?;
+    let resp = client.get_prefix_match(Request::new(req)).await?;
     Ok(resp.into_inner())
 }
 
-pub async fn say_hello_reply(addr: &str, tenant: &str, name: &str, top_k: u32) -> HelloReply {
-    say_hello_reply_result(addr, tenant, name, top_k)
+pub async fn get_prefix_match_reply(addr: &str, tenant: &str, name: &str, top_k: u32) -> HelloReply {
+    get_prefix_match_reply_result(addr, tenant, name, top_k)
         .await
         .unwrap()
 }
@@ -305,7 +303,7 @@ pub async fn put_word(addr: &str, tenant: &str, word: &str) -> Result<(), Status
 pub async fn wait_until_contains(addr: &str, tenant: &str, prefix: &str, needle: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let reply = say_hello_reply(addr, tenant, prefix, 0).await;
+        let reply = get_prefix_match_reply(addr, tenant, prefix, 0).await;
         if reply.matches.iter().any(|m| m == needle) {
             return;
         }
@@ -325,7 +323,7 @@ pub async fn assert_not_contains_for(
 ) {
     let deadline = tokio::time::Instant::now() + dur;
     loop {
-        let reply = say_hello_reply(addr, tenant, prefix, 0).await;
+        let reply = get_prefix_match_reply(addr, tenant, prefix, 0).await;
         if reply.matches.iter().any(|m| m == needle) {
             panic!("expected {} to not contain {}, but it did", addr, needle);
         }

@@ -1,14 +1,18 @@
 *.pem
 
 # Rust build artifacts
-helloworld-tonic/target/
+target/
 
 # Large images / exports (keep out of git)
-helloworld-tonic/*.tar
+*.tar
 
 # Placeholder manifests
-helloworld-tonic/helloworld-tonic.yaml
+ftrie.yaml
+helloworld-tonic.yaml
 
 # Local data dirs (WAL / test artifacts)
-helloworld-tonic/data/
-helloworld-tonic/data-*/
+data/
+data-*/
+
+# Legacy local artifacts kept from pre-consolidation layout
+helloworld-tonic/

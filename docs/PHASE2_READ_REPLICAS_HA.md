@@ -10,7 +10,7 @@ No write path is added in this phase. All replicas are "read replicas" because t
 
 ## Run
 
-From `helloworld-tonic/`:
+From repo root:
 
 ```bash
 ./scripts/run_local_phase2_replicas.sh

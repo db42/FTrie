@@ -12,7 +12,7 @@ cargo build --bins >/dev/null
 R="${R:-1}"
 # Set CLEAN=1 to wipe persisted raft state before starting.
 CLEAN="${CLEAN:-0}"
-# Optional: set TOP_K (e.g. TOP_K=10) to include it in SayHello grpcurl examples.
+# Optional: set TOP_K (e.g. TOP_K=10) to include it in GetPrefixMatch grpcurl examples.
 TOP_K="${TOP_K:-}"
 # Optional: set DEFAULT_TOP_K (e.g. DEFAULT_TOP_K=10) to change server-side default when
 # a client omits top_k (proto3 default 0).
@@ -87,7 +87,7 @@ RAFT_MEMBERS="1=${N1_ADDR},2=${N2_ADDR},3=${N3_ADDR}"
   fi
   export RAFT_MEMBERS="$RAFT_MEMBERS"
 
-  ./target/debug/helloworld-server
+  ./target/debug/ftrie-server
 ) &
 PID_N1=$!
 
@@ -105,7 +105,7 @@ PID_N1=$!
   export RAFT_NODE_ID="2"
   export RAFT_MEMBERS="$RAFT_MEMBERS"
 
-  ./target/debug/helloworld-server
+  ./target/debug/ftrie-server
 ) &
 PID_N2=$!
 
@@ -123,7 +123,7 @@ PID_N2=$!
   export RAFT_NODE_ID="3"
   export RAFT_MEMBERS="$RAFT_MEMBERS"
 
-  ./target/debug/helloworld-server
+  ./target/debug/ftrie-server
 ) &
 PID_N3=$!
 
@@ -141,7 +141,7 @@ echo "Starting LB (Raft-only, R=$R)..."
   export WRITE_TIMEOUT_MS="1200"
   export R="$R"
   export PARTITION_MAP="j-r=${N1_ADDR}|${N2_ADDR}|${N3_ADDR}"
-  ./target/debug/helloworld-lb
+  ./target/debug/ftrie-lb
 ) &
 PID_LB=$!
 
@@ -156,7 +156,7 @@ echo "    n2: ${N2_PORT}(pid=$PID_N2)"
 echo "    n3: ${N3_PORT}(pid=$PID_N3)"
 echo ""
 echo "Write (PutWord) via LB, then read from all replicas:"
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '{\"word\":\"jokerraft\",\"tenant\":\"power\"}' \\"
 echo "    127.0.0.1:${LB_PORT} helloworld.Greeter/PutWord"
 echo ""
@@ -166,20 +166,20 @@ if [[ -n "${TOP_K}" ]]; then
   HELLO_REQ="{\"name\":\"joker\",\"tenant\":\"power\",\"top_k\":${TOP_K}}"
 fi
 
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '${HELLO_REQ}' \\"
-echo "    127.0.0.1:${N1_PORT} helloworld.Greeter/SayHello"
+echo "    127.0.0.1:${N1_PORT} helloworld.Greeter/GetPrefixMatch"
 echo ""
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '${HELLO_REQ}' \\"
-echo "    127.0.0.1:${N2_PORT} helloworld.Greeter/SayHello"
+echo "    127.0.0.1:${N2_PORT} helloworld.Greeter/GetPrefixMatch"
 echo ""
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '${HELLO_REQ}' \\"
-echo "    127.0.0.1:${N3_PORT} helloworld.Greeter/SayHello"
+echo "    127.0.0.1:${N3_PORT} helloworld.Greeter/GetPrefixMatch"
 echo ""
 echo "Try leader redirection (send PutWord to a follower directly):"
-echo "  grpcurl -plaintext -import-path ./proto -proto helloworld.proto \\"
+echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"
 echo "    -d '{\"word\":\"jokerraft2\",\"tenant\":\"power\"}' \\"
 echo "    127.0.0.1:${N2_PORT} helloworld.Greeter/PutWord"
 echo ""

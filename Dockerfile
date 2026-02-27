@@ -17,12 +17,16 @@ COPY build.rs ./
 COPY words.txt ./
 COPY words_alpha.txt ./
 
-# Build the application with the specified binary target
-RUN cargo build --release --bin helloworld-server
+# Binary to build/run
+ARG APP_BIN=ftrie-server
+ENV APP_BIN=${APP_BIN}
 
-# Expose the port that the server will listen on (adjust as needed)
-EXPOSE 8080
+# Build the application with the specified binary target
+RUN cargo build --release --bin ${APP_BIN}
+
+# Expose the server's default gRPC port
+EXPOSE 50051
+ENV BIND_ADDR=0.0.0.0:50051
 
 # Run the application
-CMD ["./target/release/helloworld-server"]
-
+CMD ["sh", "-c", "./target/release/${APP_BIN}"]
