@@ -4,35 +4,6 @@ Transform a single-node prefix search service into a horizontally-scalable, faul
 
 ---
 
-## Strategic Goal: DoE Brand Building
-
-**Target**: Director of Engineering roles at deep tech infrastructure companies (GCP, AWS, Snowflake, Databricks, etc.)
-
-### Why This Project Matters
-
-| Signal | What It Demonstrates | Relevance to Target Roles |
-|--------|---------------------|---------------------------|
-| **Rust implementation** | Low-level systems expertise | Core competency for infrastructure teams |
-| **Distributed consensus (Raft)** | Understanding of coordination protocols | Table stakes for distributed databases |
-| **Horizontal sharding** | Scalability thinking | Central to Snowflake/Databricks architecture |
-| **Prefix-aware partitioning** | Domain-specific optimization vs generic solutions | Shows depth, not just breadth |
-| **Kubernetes deployment** | Cloud-native operational maturity | Expected for modern infrastructure leadership |
-| **Technical blog series** | Ability to communicate complex systems | Critical for DoE-level influence |
-
-### Differentiators vs. Typical GitHub Projects
-
-1. **Not a tutorial clone** — Custom architecture decisions with documented trade-offs
-2. **Production-oriented** — Observability, failure handling, and operational concerns baked in
-3. **Quantified outcomes** — Benchmarks comparing to Elasticsearch, not just "it works"
-4. **End-to-end ownership** — From algorithm design to Kubernetes deployment
-
-### Deliverables for Brand Building
-
-- [ ] Working distributed system deployed on EKS/GKE
-- [ ] 5-part technical blog series (see outline below)
-- [ ] Conference talk proposal: "Building Distributed Systems in Rust: Lessons from a Side Project"
-- [ ] Benchmark report comparing latency/throughput with Elasticsearch prefix queries
-
 ## Architecture Decisions
 
 ### Open Questions (To Be Decided)
@@ -320,9 +291,8 @@ Cluster configuration:
 - Add tests that demonstrate linearizability vs eventual reads under leader change and follower lag.
 - Add `READ_CONSISTENCY=eventual|linearizable` config knob (default `eventual`) and document HA vs strong tradeoffs.
 
-### Phase 13: Documentation + Blog
+### Phase 13: Documentation
 - Architecture documentation and operational runbooks
-- "Building a Distributed Prefix Search" blog series
 
 ---
 
@@ -364,13 +334,3 @@ ghz --insecure --proto ./proto/ftrie.proto \
 | Failover time | < 5s | Production-ready HA |
 | Throughput | > 10K QPS | Demonstrates horizontal scaling |
 | Memory efficiency | < 300MB per 370K words | Improved from current 700MB |
-
----
-
-## Blog Series Outline
-
-1. **"Why I Built My Own Distributed Prefix Search in Rust"** - Problem statement, architecture overview
-2. **"Prefix-Aware Consistent Hashing"** - Deep dive into sharding strategy
-3. **"Implementing Raft Consensus in a Real System"** - Practical lessons from openraft integration
-4. **"From EC2 to EKS: Kubernetes-Native Rust Services"** - Deployment patterns
-5. **"Benchmarking Against Elasticsearch"** - Performance comparison and analysis
