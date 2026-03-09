@@ -45,6 +45,12 @@ Deploy via Docker (single-node): `docker build -t ftrie-server:dev . && docker r
 ./scripts/run_local_single_node_static.sh
 ```
 
+Use a larger custom power wordlist (example 10x):
+
+```bash
+WORDS_POWER_FILE=./bench/data/words_alpha_x10.txt ./scripts/run_local_single_node_static.sh
+```
+
 Example query:
 
 ```bash
@@ -66,6 +72,22 @@ grpcurl -plaintext -import-path ./proto -proto ftrie.proto \
   -d '{"word":"jokerraft","tenant":"power"}' \
   127.0.0.1:50052 ftrie.PrefixMatcher/PutWord
 ```
+
+## Performance Snapshot
+
+QPS is 2.5x better compared to ES and p95 latency is 3.5x better.
+
+Read workload: `hot_len3_k10` (`concurrency=32`, `warmup=10s`, `duration=30s`)
+
+| Scale (Words) | Rust FST QPS | Rust Trie QPS | ES QPS | FST p95 (ms) | Trie p95 (ms) | ES p95 (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10x (~3.70M) | 11006 | 10720 | 6142 | 3.8 | 4.1 | 6.8 |
+| 25x (~9.25M) | 10922 | 11175 | 4614 | 3.9 | 3.7 | 12.7 |
+| 50x (~18.51M) | 10780 | 11049 | 4251 | 4.0 | 3.8 | 13.3 |
+
+
+Detailed results including memory:
+- `bench/THREE_WAY_COMPARISON.md`
 
 ## Architecture
 

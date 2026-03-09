@@ -66,13 +66,48 @@ References:
 
 For this comparison, `hot_len3_k10.jsonl` is used.
 
+### Scaling to 10x words (~3.7M)
+
+Generate a 10x unique `power` wordlist from `words_alpha.txt`:
+
+```bash
+cd /Users/dushyant.bansal/work/ftrie
+./scripts/generate_scaled_wordlist.py \
+  --input ./words_alpha.txt \
+  --output ./bench/data/words_alpha_x10.txt \
+  --factor 10
+```
+
+Generate workload JSONL from the 10x list:
+
+```bash
+python3 bench/bench.py generate \
+  --wordlist ./bench/data/words_alpha_x10.txt \
+  --out-dir ./bench/workloads_x10
+```
+
+Run Rust with the 10x power list:
+
+```bash
+WORDS_POWER_FILE=./bench/data/words_alpha_x10.txt \
+PORT=50051 INCLUDE_MESSAGE=0 INDEX_BACKEND=fst \
+./scripts/run_local_single_node_static.sh
+```
+
+Run ES ingest with the 10x power list:
+
+```bash
+WORDLIST=./bench/data/words_alpha_x10.txt \
+./scripts/run_local_es_single_node.sh
+```
+
 ## 1) Run Rust Benchmark
 
 Start Rust single-node server:
 
 ```bash
 cd /Users/dushyant.bansal/work/ftrie
-PORT=50051 SKIP_BUILD=1 INCLUDE_MESSAGE=0 INDEX_BACKEND=fst ./scripts/run_local_single_node_static.sh
+PORT=50051 INCLUDE_MESSAGE=0 INDEX_BACKEND=fst ./scripts/run_local_single_node_static.sh
 ```
 
 In another terminal, run benchmark:

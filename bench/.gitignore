@@ -1,4 +1,6 @@
 _gen/
 results/
 workloads/
+workloads_x*/
+data/
 __pycache__/

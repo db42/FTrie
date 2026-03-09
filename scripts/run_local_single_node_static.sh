@@ -4,8 +4,8 @@ set -euo pipefail
 # Single-node prefix service with built-in static word lists.
 #
 # Starts one `ftrie-server` that loads:
-# - tenant=thoughtspot from ./words.txt
-# - tenant=power      from ./words_alpha.txt
+# - tenant=thoughtspot from WORDS_THOUGHTSPOT_FILE (default ./words.txt)
+# - tenant=power      from WORDS_POWER_FILE       (default ./words_alpha.txt)
 #
 # Env knobs:
 # - PORT (default 50051)
@@ -21,6 +21,8 @@ set -euo pipefail
 # - INDEX_BACKEND (default trie; set fst to use the Tier-4 FST index)
 # - SKIP_BUILD (default 0)
 # - TOP_K (optional; shown in grpcurl examples)
+# - WORDS_THOUGHTSPOT_FILE (default ./words.txt)
+# - WORDS_POWER_FILE (default ./words_alpha.txt)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -40,6 +42,8 @@ DEFAULT_TOP_K="${DEFAULT_TOP_K:-0}"
 INDEX_BACKEND="${INDEX_BACKEND:-trie}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 TOP_K="${TOP_K:-}"
+WORDS_THOUGHTSPOT_FILE="${WORDS_THOUGHTSPOT_FILE:-./words.txt}"
+WORDS_POWER_FILE="${WORDS_POWER_FILE:-./words_alpha.txt}"
 
 kill_listeners_on_port() {
   local port="$1"
@@ -90,6 +94,8 @@ echo "Starting single node on :${PORT} (PREFIX_RANGE=${PREFIX_RANGE})..."
   export INCLUDE_MESSAGE="${INCLUDE_MESSAGE}"
   export DEFAULT_TOP_K="${DEFAULT_TOP_K}"
   export INDEX_BACKEND="${INDEX_BACKEND}"
+  export WORDS_THOUGHTSPOT_FILE="${WORDS_THOUGHTSPOT_FILE}"
+  export WORDS_POWER_FILE="${WORDS_POWER_FILE}"
 
   ./target/debug/ftrie-server
 ) &
@@ -107,6 +113,8 @@ fi
 echo "Ready:"
 echo "  server: 127.0.0.1:${PORT} (pid=${PID})"
 echo "  DISABLE_STATIC_INDEX=${DISABLE_STATIC_INDEX} (0 means preloaded wordlists)"
+echo "  WORDS_THOUGHTSPOT_FILE=${WORDS_THOUGHTSPOT_FILE}"
+echo "  WORDS_POWER_FILE=${WORDS_POWER_FILE}"
 echo ""
 echo "Query examples:"
 echo "  grpcurl -plaintext -import-path ./proto -proto ftrie.proto \\"

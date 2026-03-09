@@ -30,6 +30,14 @@ pub struct ShardStore {
     prefix_range: PrefixRange,
 }
 
+fn words_file_from_env(key: &str, default_value: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default_value.to_string())
+}
+
 fn normalize_and_validate_word(s: &str) -> Result<String, Status> {
     let w = s.trim().to_ascii_lowercase();
     if w.is_empty() {
@@ -68,6 +76,8 @@ impl ShardStore {
         let backend = index_backend_from_env();
         let mut indexer = Indexer::new();
         let mut fst_index = FstIndex::empty();
+        let words_thoughtspot = words_file_from_env("WORDS_THOUGHTSPOT_FILE", "./words.txt");
+        let words_power = words_file_from_env("WORDS_POWER_FILE", "./words_alpha.txt");
         // Seed from static word lists unless disabled (useful for fast black-box tests).
         let disable_static = std::env::var("DISABLE_STATIC_INDEX").unwrap_or_default() == "1";
         if !disable_static {
@@ -75,13 +85,13 @@ impl ShardStore {
                 IndexBackend::Trie => {
                     indexer.indexFileForPrefixRange(
                         "thoughtspot",
-                        "./words.txt",
+                        &words_thoughtspot,
                         prefix_range.start,
                         prefix_range.end,
                     );
                     indexer.indexFileForPrefixRange(
                         "power",
-                        "./words_alpha.txt",
+                        &words_power,
                         prefix_range.start,
                         prefix_range.end,
                     );
@@ -97,7 +107,7 @@ impl ShardStore {
                         ('a'..='z').contains(&c) && c >= start && c <= end
                     };
                     fst_index
-                        .index_file_for_prefix_range("thoughtspot", "./words.txt", keep)
+                        .index_file_for_prefix_range("thoughtspot", &words_thoughtspot, keep)
                         .map_err(|e| Status::internal(format!("fst load failed: {}", e)))?;
                     // Recreate closure because `keep` was moved above.
                     let start = prefix_range.start.to_ascii_lowercase();
@@ -110,7 +120,7 @@ impl ShardStore {
                         ('a'..='z').contains(&c) && c >= start && c <= end
                     };
                     fst_index
-                        .index_file_for_prefix_range("power", "./words_alpha.txt", keep2)
+                        .index_file_for_prefix_range("power", &words_power, keep2)
                         .map_err(|e| Status::internal(format!("fst load failed: {}", e)))?;
                 }
             }

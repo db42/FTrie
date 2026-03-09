@@ -118,3 +118,79 @@ python3 bench/bench.py matrix-es \
   --duration-s 30 \
   bench/workloads/hot_len3_k10.jsonl
 ```
+
+## Larger Dataset (10x)
+
+Create a 10x unique power wordlist (~3.7M words):
+
+```bash
+./scripts/generate_scaled_wordlist.py \
+  --input ./words_alpha.txt \
+  --output ./bench/data/words_alpha_x10.txt \
+  --factor 10
+```
+
+Generate workloads from that list:
+
+```bash
+python3 bench/bench.py generate \
+  --wordlist ./bench/data/words_alpha_x10.txt \
+  --out-dir ./bench/workloads_x10
+```
+
+Use it with Rust static index:
+
+```bash
+WORDS_POWER_FILE=./bench/data/words_alpha_x10.txt ./scripts/run_local_single_node_static.sh
+```
+
+Use it with Elasticsearch ingest:
+
+```bash
+WORDLIST=./bench/data/words_alpha_x10.txt ./scripts/run_local_es_single_node.sh
+```
+
+## Scale Sweep Scripts
+
+Run Rust(FST) vs ES performance sweep across 25x/50x/100x:
+
+```bash
+./scripts/bench_scale_perf.sh
+```
+
+Run Rust trie only (no ES):
+
+```bash
+RUST_BACKEND=trie RUN_ES=0 ./scripts/bench_scale_perf.sh
+```
+
+Generate only the missing 10x Rust trie perf artifact:
+
+```bash
+./scripts/bench_generate_trie_x10_perf.sh
+```
+
+Run Rust(FST) vs ES memory sweep across 25x/50x/100x:
+
+```bash
+./scripts/bench_scale_memory.sh
+```
+
+Run Rust trie memory only (no ES):
+
+```bash
+RUST_BACKEND=trie RUN_ES=0 ./scripts/bench_scale_memory.sh
+```
+
+Three-way summary reference:
+
+- `bench/THREE_WAY_COMPARISON.md`
+
+Useful env overrides:
+
+- `FACTORS="25 50 100"`
+- `CONCURRENCY=32 WARMUP_S=10 DURATION_S=30` (perf script)
+- `RUST_BACKEND=fst|trie`
+- `RUN_RUST=1 RUN_ES=0|1`
+- `ES_HEAP=4g`
+- `OUT=bench/results/memory_scale_custom.tsv` (memory script)
